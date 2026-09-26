@@ -1,14 +1,24 @@
-# Jarvis rebuild (agent-1) — PROGRESS
+# Jarvis rebuild — PROGRESS
 
 **All 7 phases built and tested** (Phases 1, 2, 3, 5, 6, 7 complete; Phase 4 confirmation/shadow/
 receipts core complete — that is the whole of Phase 4's code scope).
+**Connector buildout STARTED (Sid approved):** school collector protocol ported + tested
+(22 new tests). 81/81 green, tsc clean.
 
-**Exact next step:** production persistence + runtime wiring (the deploy-side work, not new
-features): replace the in-memory repositories with D1-backed adapters that run
-`migrations/0001_init.sql`; persist Durable Object state across evictions; bind Vectorize +
-Workers AI + R2 in place of the in-memory/fake stand-ins; and implement the DO WebSocket loop that
-streams ConversationRelay call turns. The agent core already treats a voice turn identically to a
-text turn, so that last one is transport wiring, not logic.
+**Sid's locked answers (2026-09-26, via popup):**
+- spend_money = browser autofill: Jarvis drives the checkout, clicks his saved card ending
+  **2286**. No payment API. Still a confirmed action, still PIN-gated on calls.
+- PC agent = FULL hands: "jarvis can do literally anything he wants" (shell, browser, files).
+  Receipts still log everything (Proof is architecture, not a restriction).
+- Outbound email = his real accounts, model picks by recipient unless told: Gmail API for
+  ksid1229@gmail.com, Microsoft Graph for sk7qq09@limestone.on.ca (MX proves M365).
+  Passwords/tokens stored as deploy secrets, redacted from logs, visible to Sid on request.
+- PC offline = QUEUE: record it, say it's queued, run it when the PC checks in.
+
+**Exact next step:** D1 persistence adapters for every repo + migration 0002 (school collector
+keys/nonces/evidence/requests). Then in order: school routes + pairing approval + school tools,
+school-app fix (issuedAt→ISO, base URL, pull client, 4 parser bugs), pull channel both sides,
+email in/out, Twilio REST + ConversationRelay WS loop, Vectorize index, PC agent app.
 
 **Voice runtime note:** the `/voice` webhook (Twilio signature verified, returns ConversationRelay
 TwiML) and the caller-id/PIN/guest logic are built and unit-tested. The DO WebSocket loop that
@@ -81,6 +91,9 @@ npm test
 - `src/channels/fake-owner-channel.ts` — test channel; can be told to fail.
 - `src/router/telegram-webhook.ts` — signature + owner checks (fail closed) + provenance.
 - `src/index.ts` — Worker router + JarvisDurableObject (production wiring).
+- `src/school/canonical.ts` — canonical JSON, byte-compatible with the school app (ported reference).
+- `src/school/signed-request.ts` — Ed25519 envelope verify over exact body bytes (ported reference).
+- `src/school/collector-protocol.ts` — parseSchoolBatch + verifyCollectorRequest, single-use nonces.
 - `migrations/0001_init.sql` — D1 schema mirroring the repos.
 - `wrangler.toml` — Cloudflare config (D1/R2/Vectorize/AI/Queues/DO/cron).
 
@@ -114,6 +127,11 @@ npm test
   date + search across range incl call transcripts; archive_search tool; heartbeat alive-vs-quiet; watchdog
   honest not_connected vs a real ping; vault export processes EVERY note (101, not 64); vault token fail-closed.
 
+- `test/school-protocol.test.ts` (22): canonical known-answer vectors; batch accept/reject
+  (extra field, numeric/future/shifted timestamps, duplicate route, host-failure rules, JSON 403
+  as evidence); full Ed25519 round-trip with real keys; nonce single-use; numeric-issuedAt
+  refusal; 5-min skew; tampered body; non-canonical body; wrong principal; inactive key.
+
 ## Mutation checks done this session (trap: don't trust green until you mutate)
 
 Each guard below was broken on purpose; the named test went red; then reverted. See the
@@ -131,6 +149,8 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 - Wake-up due-time check (fire everything) → phase6 "fires only wake-ups whose time has PASSED" went red.
 - Vault export capped at 64 (the old bug) → phase7 "processes EVERY note" went red.
 - Vault token fail-open (no token => allow) → phase7 "token-gated and fails closed" went red.
+- Nonce insert disabled → school-protocol "refuses to reuse a nonce" went red.
+- Exact-field check disabled → school-protocol "rejects an extra field anywhere" went red.
 
 ## Decisions not in the brief (mine, flagged for Sid)
 
@@ -151,6 +171,16 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
    Phase 3 says connecting an app is "a one-time setup step with a confirmation." I honored Phase 3:
    `connect_app` routes through the same enforced gate, because granting an app a place in the tool
    catalogue is a permission change. Flagged here so it isn't read as a sixth everyday confirmation.
+5. **School protocol ports (exact sources).** `src/school/*` is ported from stremysid/jarvis at
+   commit 0c56920: `apps/d2l-extension/protocol.js` (canonical, envelope shape) and
+   `apps/cloud-gateway/src/school/collector-protocol.ts` + `src/sync/signed-request.ts`
+   (parseSchoolBatch, verifyCollectorRequest, nonce handling). Error strings kept identical.
+   One simplification: no `principals` join — single-owner system, owner id comes from env.
+6. **School app `issuedAt` break (found 2026-09-26).** The app sends `issuedAt` as an epoch
+   NUMBER; the proven receiver requires an ISO-8601 UTC STRING and rejects anything else
+   before signature check. The app's fake-gateway test never validated the field, and live
+   pairing was never attempted, so it shipped uncaught. Fix direction: app sends ISO strings
+   (matching the reference), pinned by a refusal test on this side + app-side vectors.
 
 ## What is faked, and why
 
@@ -196,7 +226,7 @@ Built by:
 - Reasoning / effort level (if known): UNKNOWN
 - Knowledge cutoff: UNKNOWN
 - Session date and time (UTC): 2026-09-26
-- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4)
+- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4) + connector buildout started (school protocol)
 
 ---
 
