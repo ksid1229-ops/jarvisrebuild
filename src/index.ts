@@ -23,6 +23,7 @@ import { D1ConnectedAppsRepo } from "./apps/app-registry.js";
 import { D1GuestsRepo } from "./voice/guests-repo.js";
 import { D1WakeupsRepo } from "./scheduler/wakeups-repo.js";
 import { D1HeartbeatRepo } from "./plumbing/heartbeat.js";
+import { COLLECTOR_ENVELOPE_HEADER, handleSchoolRequest } from "./school/routes.js";
 
 /**
  * Worker router. Receives Telegram webhooks, verifies them (fail closed), and
@@ -112,6 +113,21 @@ export default {
       });
     }
 
+    // School surface: the 4 routes the School Helper extension dials. Forwarded
+    // to the DO raw — the envelope header and exact body bytes must survive.
+    if (url.pathname.startsWith("/school/")) {
+      const ns = env.JARVIS as DurableObjectNamespace | undefined;
+      if (!ns) return json({ ok: false, reason: "JARVIS DO binding missing" }, 500);
+      if (!env.OWNER_CHAT_ID) return json({ ok: false, reason: "OWNER_CHAT_ID not configured" }, 500);
+      const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      const envelope = request.headers.get(COLLECTOR_ENVELOPE_HEADER);
+      if (envelope) headers[COLLECTOR_ENVELOPE_HEADER] = envelope;
+      const init: RequestInit = { method: request.method, headers };
+      if (request.method === "POST") init.body = await request.text();
+      return stub.fetch(`https://do${url.pathname}`, init);
+    }
+
     // Vault export (Phase 7): one-way pull for the Windows PC script. Token-gated
     // (fail closed). Routes to the DO where the data lives.
     if (url.pathname === "/vault/export") {
@@ -195,6 +211,7 @@ export class JarvisDurableObject {
       ownerId: chatId,
       timezone: this.env.OWNER_TIMEZONE ?? "America/Toronto",
       ...(stores ? { stores } : {}),
+      ...(db ? { db } : {}),
       ...(this.env.OWNER_ACTION_PIN ? { ownerPin: this.env.OWNER_ACTION_PIN } : {}),
       ...(this.env.OWNER_PIN_PEPPER ? { pinPepper: this.env.OWNER_PIN_PEPPER } : {}),
     });
@@ -211,6 +228,9 @@ export class JarvisDurableObject {
     }
     if (url.pathname === "/vault/export") {
       return this.handleVaultExport(request);
+    }
+    if (url.pathname.startsWith("/school/")) {
+      return this.handleSchool(request);
     }
     const update = (await request.json()) as {
       chatId: string;
@@ -316,5 +336,53 @@ export class JarvisDurableObject {
     }
     const exported = buildVaultExport(await built.facts.all(), await built.wakeupsRepo.list());
     return json({ ok: true, count: exported.count, notes: exported.notes });
+  }
+
+  private async handleSchool(request: Request): Promise<Response> {
+    // The school surface requires D1: keys, nonces, evidence and the request
+    // queue have no in-memory fallback. Fail closed without it.
+    const db = this.env.DB as D1Db | undefined;
+    if (!db) return json({ ok: false, reason: "school surface needs the DB binding" }, 500);
+    const ownerId = this.env.OWNER_CHAT_ID ?? "";
+    if (!ownerId) return json({ ok: false, reason: "OWNER_CHAT_ID not configured" }, 500);
+    const url = new URL(request.url);
+    const rawBody = await request.text();
+    const result = await handleSchoolRequest(request.method, url.pathname, request.headers, rawBody, {
+      db,
+      ownerId,
+      nowMs: () => Date.now(),
+    });
+    if (result.pairing) {
+      // A pairing started: wake the brain so it can ask Sid for the code.
+      // The HTTP answer still goes back to the app untouched.
+      try {
+        const built = this.ensureBuilt(ownerId);
+        const wake = await built.agent.handle({
+          channel: "text",
+          trigger: "app_event",
+          eventId: newId("evt"),
+          text:
+            `A School Helper pairing started on '${result.pairing.deviceLabel}'. ` +
+            `If Sid gives you the 6-digit code, approve it with school_collector_approve. ` +
+            `The code expires at ${result.pairing.expiresAt}. Only a code Sid himself gives you counts.`,
+          provenance: {
+            channel: "text",
+            isOwner: false,
+            isForwarded: false,
+            isPrivate: true,
+            sourceRef: `school:pairing:${result.pairing.collectorId}`,
+            sourceType: "app",
+          },
+        });
+        if (!wake.error && wake.reply.trim() !== "") {
+          const ch = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", ownerId);
+          await ch.sendText(wake.reply);
+        }
+      } catch (e) {
+        if (!(e instanceof MissingModelKeyError)) throw e;
+        // No model: the pairing still stands; Sid just gets no pro-active text.
+      }
+    }
+    return json(result.body, result.status);
   }
 }

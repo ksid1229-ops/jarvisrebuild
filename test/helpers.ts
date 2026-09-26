@@ -24,6 +24,7 @@ export function makeHarness(
     makeConnector?: (app: ConnectedApp) => AppConnector;
     ownerPin?: string;
     pinPepper?: string;
+    db?: import("../src/persistence/d1.js").D1Db;
   } = {},
 ): Harness {
   const clock = opts.clock ?? new FixedClock();
@@ -42,6 +43,7 @@ export function makeHarness(
     ...(opts.makeConnector ? { makeConnector: opts.makeConnector } : {}),
     ...(opts.ownerPin ? { ownerPin: opts.ownerPin } : {}),
     ...(opts.pinPepper ? { pinPepper: opts.pinPepper } : {}),
+    ...(opts.db ? { db: opts.db } : {}),
   });
   return {
     ...built,
@@ -72,6 +74,7 @@ export function makeHarness(
         guests: built.guests,
         wakeups: built.wakeups,
         archive: built.archive,
+        school: built.school,
       };
     },
   };

@@ -3,8 +3,9 @@
 **All 7 phases built and tested** (Phases 1, 2, 3, 5, 6, 7 complete; Phase 4 confirmation/shadow/
 receipts core complete — that is the whole of Phase 4's code scope).
 **Connector buildout in progress (Sid approved):** school protocol ported (22 tests) +
-D1 persistence for ALL stores, wired into the production DO (8 persistence tests).
-89/89 green, tsc clean, school app untouched at 231/231.
+D1 persistence for ALL stores, wired into the production DO (8 persistence tests) +
+school routes + pairing approval + 7 school tools served from evidence (14 tests).
+103/103 green, tsc clean, school app untouched at 231/231.
 
 **Sid's locked answers (2026-09-26, via popup):**
 - spend_money = browser autofill: Jarvis drives the checkout, clicks his saved card ending
@@ -16,10 +17,9 @@ D1 persistence for ALL stores, wired into the production DO (8 persistence tests
   Passwords/tokens stored as deploy secrets, redacted from logs, visible to Sid on request.
 - PC offline = QUEUE: record it, say it's queued, run it when the PC checks in.
 
-**Exact next step:** school routes (pairing start/prove/status + observations) + pairing
-approval through Jarvis + the 4 school tools served from evidence. Then in order: school-app
-fix (issuedAt to ISO, base URL, pull client, 4 parser bugs), pull channel both sides, email
-in/out (Cloudflare in, Gmail API + MS Graph out), Twilio REST + ConversationRelay WS loop,
+**Exact next step:** school-app fix (issuedAt to ISO, base URL, pull client, 4 parser bugs,
+grade-objects evidence route). Then in order: pull channel both sides, email in/out
+(Cloudflare in, Gmail API + MS Graph out), Twilio REST + ConversationRelay WS loop,
 Vectorize index, PC agent app.
 
 **Voice runtime note:** the `/voice` webhook (Twilio signature verified, returns ConversationRelay
@@ -36,7 +36,7 @@ npm install
 npm test
 ```
 
-59 tests pass (`vitest`). `npm run typecheck` (`tsc --noEmit`) is clean.
+103 tests pass (`vitest`). `npm run typecheck` (`tsc --noEmit`) is clean.
 
 ---
 
@@ -84,7 +84,7 @@ npm test
 - `src/scheduler/time-zones.ts` — Eastern wall-clock via Intl (DST-correct, no hardcoded offset).
 - `src/scheduler/cron.ts` — cron entry: fire due wake-ups, hourly check, watchdog ping, nightly backup.
 - `src/plumbing/bucket.ts` — Bucket interface + InMemoryBucket + R2 adapter (production swap-in).
-- `src/plumbing/backup.ts` — nightly export of every table + row counts (no silent truncation).
+- `src/plumbing/backup.ts` — nightly export of every table + every row (no silent truncation).
 - `src/plumbing/archive.ts` — conversation archive by date + archive_search tool.
 - `src/plumbing/heartbeat.ts` — per-component liveness (alive vs quiet).
 - `src/plumbing/watchdog.ts` — external ping (Healthchecks.io); honest not_connected when unset.
@@ -96,6 +96,12 @@ npm test
 - `src/school/canonical.ts` — canonical JSON, byte-compatible with the school app (ported reference).
 - `src/school/signed-request.ts` — Ed25519 envelope verify over exact body bytes (ported reference).
 - `src/school/collector-protocol.ts` — parseSchoolBatch + verifyCollectorRequest, single-use nonces.
+- `src/school/collector-keys.ts` — D1 collector key registry (pending/active/revoked, approve-by-code).
+- `src/school/evidence-store.ts` — D1 evidence rows (latest-good-per-course, history, freshness).
+- `src/school/school-requests.ts` — D1 pull-queue (sync_now/open_item/notify; queued→delivered→succeeded).
+- `src/school/evidence-items.ts` — batch → typed items/grades/courses/gaps; diffExtracted for changes.
+- `src/school/routes.ts` — the 4 school HTTP routes (pairing start/prove/status + observations).
+- `src/school/school-tools.ts` — the 7 school tools (snapshot/changes/sync/open/approve/revoke/status).
 - `src/persistence/d1.ts` — D1Db interface mirroring the real binding (prepare/bind/first/all/run).
 - Every `*-repo.ts` — now an async `*Store` interface + in-memory impl + `D1*` impl, same semantics.
 - `migrations/0002_school_surface.sql` — app_events, heartbeats (0001 missed them), school keys/nonces/evidence/requests.
@@ -139,6 +145,10 @@ npm test
   (extra field, numeric/future/shifted timestamps, duplicate route, host-failure rules, JSON 403
   as evidence); full Ed25519 round-trip with real keys; nonce single-use; numeric-issuedAt
   refusal; 5-min skew; tampered body; non-canonical body; wrong principal; inactive key.
+- `test/school-routes.test.ts` (14): full pairing loop (start/prove/status/approve/retry) over
+  real SQLite; bad bodies/challenges/replays/revokes/expiry; observations good+failed stored;
+  extractors against the app's REAL D2L fixtures (linked grades/weights/feedback, deep links,
+  content, enrollments, ambiguity, refused reads); batch diffing; all 7 tools incl fail-closed.
 
 ## Mutation checks done this session (trap: don't trust green until you mutate)
 
@@ -160,6 +170,7 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 - Nonce insert disabled → school-protocol "refuses to reuse a nonce" went red.
 - Exact-field check disabled → school-protocol "rejects an extra field anywhere" went red.
 - D1 expiry comparison flipped (`>` to `<`) → persistence "facts expiry" went red.
+- Unpublished-announcement filter disabled → school-routes "extracts announcements..." went red.
 
 ## Decisions not in the brief (mine, flagged for Sid)
 
@@ -196,6 +207,17 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
    before signature check. The app's fake-gateway test never validated the field, and live
    pairing was never attempted, so it shipped uncaught. Fix direction: app sends ISO strings
    (matching the reference), pinned by a refusal test on this side + app-side vectors.
+9. **Grade-objects route added to the evidence allow-list.** The ported reference accepted
+   only `grades/values/myGradeValues/`; without the grade objects there is no weight and no
+   tool linkage, so `school_snapshot_read` could never report either. Both sides are owned and
+   nothing is deployed, so the `grades/` route is accepted (receiver now, app sends it next).
+10. **School surface requires D1, no in-memory fallback.** Keys, nonces, evidence and the
+    pull queue are security/correctness state — an in-memory version would silently unpair
+    devices and lose evidence on eviction. Routes 500 and tools report `not_connected` without
+    `env.DB`, and local `wrangler dev` ships a real D1 so this costs nothing.
+11. **Discussions deferred, reported as a gap.** Per-forum topic reads need dynamic routes;
+    the snapshot reports `discussions are not pushed by the extension yet` instead of empty
+    silence, so the model never claims there is nothing to discuss.
 
 ## What is faked, and why
 
@@ -241,7 +263,7 @@ Built by:
 - Reasoning / effort level (if known): UNKNOWN
 - Knowledge cutoff: UNKNOWN
 - Session date and time (UTC): 2026-09-26
-- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4) + connector buildout (school protocol, full D1 persistence)
+- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4) + connector buildout (school protocol, full D1 persistence, school routes + pairing + school tools)
 
 ---
 

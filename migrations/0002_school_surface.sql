@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS school_evidence (
   course_id           TEXT,
   course_name         TEXT,
   enrollment_complete INTEGER NOT NULL,
-  routes_json         TEXT NOT NULL,
+  body_json           TEXT NOT NULL,
   received_at         TEXT NOT NULL,
   outcome             TEXT NOT NULL CHECK (outcome IN ('good','failed'))
 );

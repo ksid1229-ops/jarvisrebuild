@@ -65,6 +65,10 @@ export interface ToolContext {
   wakeups?: import("../scheduler/wakeup-scheduler.js").WakeupScheduler;
   /** Conversation archive search. */
   archive?: import("../plumbing/archive.js").ArchiveService;
+
+  // ---- School (D1-backed evidence + collector keys + request queue) ----
+  /** Present when a database is wired. Absent => school tools fail closed. */
+  school?: import("../school/school-tools.js").SchoolServices;
 }
 
 export interface Tool {

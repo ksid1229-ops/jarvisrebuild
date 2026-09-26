@@ -55,6 +55,7 @@ export interface AgentDeps {
   pinPepper?: string;
   wakeups?: import("../scheduler/wakeup-scheduler.js").WakeupScheduler;
   archive?: import("../plumbing/archive.js").ArchiveService;
+  school?: import("../school/school-tools.js").SchoolServices;
 }
 
 /**
@@ -88,6 +89,7 @@ export class AgentCore {
       pinPepper: this.d.pinPepper,
       wakeups: this.d.wakeups,
       archive: this.d.archive,
+      school: this.d.school,
     };
   }
 

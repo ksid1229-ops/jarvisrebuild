@@ -28,6 +28,11 @@ import { ArchiveService, archiveSearch } from "../plumbing/archive.js";
 import { BackupService } from "../plumbing/backup.js";
 import { HeartbeatRepo, type HeartbeatStore } from "../plumbing/heartbeat.js";
 import { WatchdogPinger } from "../plumbing/watchdog.js";
+import type { D1Db } from "../persistence/d1.js";
+import { CollectorKeys } from "../school/collector-keys.js";
+import { EvidenceStore } from "../school/evidence-store.js";
+import { SchoolRequests } from "../school/school-requests.js";
+import { schoolTools, type SchoolServices } from "../school/school-tools.js";
 
 export interface BuildInput {
   model: Model;
@@ -63,6 +68,12 @@ export interface BuildInput {
     wakeupsRepo?: WakeupsStore;
     heartbeat?: HeartbeatStore;
   };
+  /**
+   * D1 database. When present, the school surface (collector keys, evidence,
+   * request queue) is constructed and the 7 school tools are registered. When
+   * absent the school tools fail closed with not_connected.
+   */
+  db?: D1Db;
 }
 
 export interface BuiltJarvis {
@@ -84,6 +95,7 @@ export interface BuiltJarvis {
   heartbeat: HeartbeatStore;
   watchdog: WatchdogPinger;
   bucket: Bucket;
+  school?: SchoolServices;
 }
 
 /** Wire the whole brain together. Used by the DO, local runner and tests. */
@@ -94,12 +106,21 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
   const pending = input.stores?.pending ?? new PendingActionsRepo(input.clock);
   const settings = input.stores?.settings ?? new SettingsRepo();
 
+  const school: SchoolServices | undefined = input.db
+    ? {
+        keys: new CollectorKeys(input.db),
+        evidence: new EvidenceStore(input.db),
+        requests: new SchoolRequests(input.db),
+      }
+    : undefined;
+
   const dispatcher = new ToolDispatcher([
     ...memoryTools,
     ...actionTools,
     ...appTools,
     ...voiceTools,
     ...wakeupTools,
+    ...(school ? schoolTools : []),
     archiveSearch,
     sendText,
     receiptsQuery,
@@ -153,6 +174,7 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     ownerPinVerifier,
     wakeups,
     archive,
+    ...(school ? { school } : {}),
     ...(input.pinPepper ? { pinPepper: input.pinPepper } : {}),
   });
 
@@ -175,5 +197,6 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     heartbeat,
     watchdog,
     bucket,
+    ...(school ? { school } : {}),
   };
 }
