@@ -6,12 +6,7 @@ import { D2lClient, type RequestLogEntry } from './client';
 import { endpoints } from './endpoints';
 import { saveFixture } from './capture';
 import { ensureDurhamSession } from './sso';
-import {
-  applyProgress,
-  parseContentTree,
-  type D2lContentObject,
-  type D2lUserProgress,
-} from './parsers/content';
+import { parseContentTree, type D2lContentObject } from './parsers/content';
 import {
   applySubmission,
   findHiddenFolderIds,
@@ -26,9 +21,7 @@ import {
   type D2lGradeValue,
 } from './parsers/grades';
 import { parseQuizzes, type D2lQuiz } from './parsers/quizzes';
-import { parseDiscussions, type D2lDiscussionTopic, type D2lForum } from './parsers/discussions';
 import { parseAnnouncements, type D2lNewsItem } from './parsers/news';
-import { parseRubrics, type D2lRubric } from './parsers/rubrics';
 import {
   knownCourses,
   parseEnrollments,
@@ -222,7 +215,7 @@ async function syncCourse(
   const origin = BOARDS[course.board].origin;
   const ou = course.orgUnitId;
   const ctx = { courseId: course.id, board: course.board, origin, orgUnitId: ou, now };
-  const step = 75 / Math.max(1, total) / 7;
+  const step = 75 / Math.max(1, total) / 6;
   let items: WorkItem[] = [];
 
   // Content tree
@@ -238,17 +231,13 @@ async function syncCourse(
     fromTopic: string;
     title: string;
   }[] = [];
+  // The tracker walks the five course tiles like Sid does — Course Home,
+  // Content, Assignments, Grades, Quizzes — and nothing else. Completion
+  // progress, discussions and rubrics are not tiles, so they are not read.
   if (root) {
     const parsed = parseContentTree(root, ctx);
     activityLinks = parsed.activityLinks;
-    let contentItems = parsed.items;
-    const progress = await safeRead<D2lUserProgress[]>(
-      endpoints.contentCompletions(ou),
-      'content-progress',
-      'progress',
-    );
-    if (progress) contentItems = applyProgress(contentItems, progress);
-    items.push(...contentItems);
+    items.push(...parsed.items);
   }
 
   // Dropboxes, including ones hidden from the list but linked in content
@@ -284,22 +273,11 @@ async function syncCourse(
     );
     if (subs?.length) item = applySubmission(item, subs, myUserId);
     items.push(item);
-
-    // Rubrics for this assignment
-    const rubrics = await safeRead<D2lRubric[]>(
-      endpoints.objectRubrics(ou, 'dropbox', String(folder.Id)),
-      'rubrics',
-      `rubric for ${folder.Name}`,
-    );
-    if (rubrics?.length) {
-      const parsed = parseRubrics(rubrics, course.id, item.id);
-      await db.rubrics.bulkPut(parsed);
-      items[items.length - 1] = { ...item, rubricIds: parsed.map((r) => r.id) };
-    }
   }
 
   // Quizzes
   report(`${course.code}: quizzes`, base + step * 3);
+  // (Discussions were step 4. They are no longer a tracked tile.)
   const quizzes = await safeRead<{ Objects?: D2lQuiz[] } | D2lQuiz[]>(
     endpoints.quizzes(ou),
     'quizzes',
@@ -310,33 +288,13 @@ async function syncCourse(
     items.push(...parseQuizzes(list, ctx));
   }
 
-  // Discussions
-  report(`${course.code}: discussions`, base + step * 4);
-  const forums = await safeRead<D2lForum[]>(
-    endpoints.discussionForums(ou),
-    'discussion-forums',
-    'discussions',
-  );
-  if (forums?.length) {
-    const topicsByForum: Record<string, D2lDiscussionTopic[]> = {};
-    for (const f of forums) {
-      const topics = await safeRead<D2lDiscussionTopic[]>(
-        endpoints.discussionTopics(ou, String(f.ForumId)),
-        'discussion-topics',
-        `topics in ${f.Name}`,
-      );
-      topicsByForum[String(f.ForumId)] = topics ?? [];
-    }
-    items.push(...parseDiscussions(forums, topicsByForum, ctx));
-  }
-
-  // Announcements
-  report(`${course.code}: announcements`, base + step * 5);
+  // Announcements (the Course Home tile)
+  report(`${course.code}: announcements`, base + step * 4);
   const news = await safeRead<D2lNewsItem[]>(endpoints.news(ou), 'news', 'announcements');
   if (news) items.push(...parseAnnouncements(news, ctx));
 
   // Grades and weights
-  report(`${course.code}: grades`, base + step * 6);
+  report(`${course.code}: grades`, base + step * 5);
   const objects =
     (await safeRead<D2lGradeObject[]>(
       endpoints.gradeObjects(ou),

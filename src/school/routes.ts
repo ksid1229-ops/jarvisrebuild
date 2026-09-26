@@ -22,6 +22,7 @@ import {
 } from "./signed-request.js";
 import { CollectorKeys } from "./collector-keys.js";
 import { EvidenceStore } from "./evidence-store.js";
+import { SchoolRequests } from "./school-requests.js";
 
 export const COLLECTOR_ENVELOPE_HEADER = "x-jarvis-signed-request";
 
@@ -119,6 +120,7 @@ export async function handleSchoolRequest(
   if (path === "/school/pairing/prove") return handleProve(headers, rawBody, path, deps);
   if (path === "/school/pairing/status") return handleStatus(headers, rawBody, path, deps);
   if (path === "/school/observations") return handleObservations(headers, rawBody, path, deps);
+  if (path === "/school/pull") return handlePull(headers, rawBody, path, deps);
   return fail(404, "not_found", `unknown school route ${path}`);
 }
 
@@ -224,6 +226,53 @@ async function handleStatus(
     return verifyFailure(error);
   }
   return { status: 200, body: { status: peeked.key.status } };
+}
+
+/**
+ * Pull channel: the extension asks what Jarvis wants. Oldest queued requests
+ * first, marked delivered as they are handed over. sync_now needs no result
+ * report — its proof is the fresh evidence that arrives afterwards.
+ */
+async function handlePull(
+  headers: Headers, rawBody: string, path: string, deps: SchoolRouteDeps,
+): Promise<SchoolRouteResult> {
+  const peeked = peekEnvelope(headers);
+  if (isSchoolRouteResult(peeked)) return peeked;
+  const key = await new CollectorKeys(deps.db).get(peeked.deviceId);
+  if (!key || key.status !== "active") {
+    return fail(403, "school_key_inactive", "collector key is not active");
+  }
+  try {
+    await verifyCollectorRequest(
+      deps.db, deps.ownerId, peeked.header, path, rawBytes(rawBody),
+      new Date(deps.nowMs()), "active",
+    );
+  } catch (error) {
+    return verifyFailure(error);
+  }
+  let body: JsonValue;
+  try {
+    body = decodeCanonicalRawBody(rawBytes(rawBody));
+  } catch (error) {
+    return fail(400, "bad_request", error instanceof Error ? error.message : "bad body");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return fail(400, "bad_request", "pull body must be an object");
+  }
+  const requests = new SchoolRequests(deps.db);
+  const now = new Date(deps.nowMs()).toISOString();
+  const out: { requestId: string; action: string; args: unknown }[] = [];
+  for (const req of await requests.queued(10)) {
+    let args: unknown = null;
+    try {
+      args = JSON.parse(req.argsJson) as unknown;
+    } catch {
+      args = null;
+    }
+    out.push({ requestId: req.requestId, action: req.action, args });
+    await requests.markDelivered(req.requestId, now);
+  }
+  return { status: 200, body: { requests: out } };
 }
 
 async function handleObservations(

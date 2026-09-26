@@ -76,8 +76,8 @@ describe('end-to-end sync against fixtures', () => {
     expect(seen.some((r) => /submit|markasread|\/post\b/i.test(r.url))).toBe(false);
   });
 
-  it('stores content, assignments, quizzes, discussions and announcements', async () => {
-    const { fetchImpl } = makeFakeD2l();
+  it('stores the five tracked tiles and nothing else', async () => {
+    const { fetchImpl, seen } = makeFakeD2l();
     await runSync({ trigger: 'manual', boards: ['ldsb'], fetchImpl });
     const items = await db.items.where('courseId').equals('ldsb:29940528').toArray();
     const kinds = new Set(items.map((i) => i.kind));
@@ -85,8 +85,12 @@ describe('end-to-end sync against fixtures', () => {
     expect(kinds).toContain('lesson');
     expect(kinds).toContain('assignment');
     expect(kinds).toContain('quiz');
-    expect(kinds).toContain('discussion');
     expect(kinds).toContain('announcement');
+    expect(kinds).not.toContain('discussion');
+    // Discussions, rubrics and completion progress are not tiles: never read.
+    expect(seen.some((r) => r.url.includes('/discussions/'))).toBe(false);
+    expect(seen.some((r) => r.url.includes('/rubrics/'))).toBe(false);
+    expect(seen.some((r) => r.url.includes('/content/userprogress/'))).toBe(false);
   });
 
   it('finds the dropbox that is linked from content but hidden from the list', async () => {
@@ -108,12 +112,11 @@ describe('end-to-end sync against fixtures', () => {
     expect(ws!.status).toBe('graded');
   });
 
-  it('stores the level-4 rubric for the assignment', async () => {
-    const { fetchImpl } = makeFakeD2l();
+  it('does not read rubrics: they are not a tracked tile', async () => {
+    const { fetchImpl, seen } = makeFakeD2l();
     await runSync({ trigger: 'manual', boards: ['ldsb'], fetchImpl });
-    const stored = await db.rubrics.toArray();
-    expect(stored.length).toBeGreaterThan(0);
-    expect(stored[0].criteria[0].level4).toContain('thorough understanding');
+    expect(seen.some((r) => r.url.includes('/rubrics/'))).toBe(false);
+    expect(await db.rubrics.count()).toBe(0);
   });
 
   it('DIFFS against the previous sync and reports only what changed', async () => {

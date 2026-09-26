@@ -276,7 +276,7 @@ export interface AnswerNote {
 /** Which wire contract the link speaks. See docs/JARVIS-LINK.md. */
 export type JarvisTransportKind = 'gateway';
 
-export type JarvisPairingStatus = 'unpaired' | 'pending' | 'active' | 'unavailable-or-refused';
+export type JarvisPairingStatus = 'unpaired' | 'pending' | 'active' | 'expired' | 'unavailable-or-refused';
 
 export interface JarvisSettings {
   enabled: boolean;

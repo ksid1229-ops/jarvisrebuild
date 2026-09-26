@@ -9,7 +9,7 @@ import { db, getSettings, saveSettings } from '../common/db';
 import type { JarvisLogEntry, JarvisSettings } from '../common/types';
 import { canonical } from './canonical';
 import type { ObservationBatch } from './evidence';
-import { GatewayTransport } from './transport';
+import { GatewayTransport, TransportError } from './transport';
 import type { JarvisTransport, TransportCall, TransportStore } from './transport';
 import { flush as flushOutbox, prune } from './outbox';
 import type { OutboxEntry } from './outbox';
@@ -21,7 +21,9 @@ export const FAILURE_WARNING_THRESHOLD = 3;
 export const DEFAULT_JARVIS: JarvisSettings = {
   enabled: false,
   transport: 'gateway',
-  baseUrl: 'https://jarvis-cloud-gateway.twilight-tree-70b1.workers.dev',
+  // Unset on purpose: the old cloud-gateway URL is dead, and guessing a worker
+  // URL would fail confusingly. Pairing refuses until Sid pastes his own.
+  baseUrl: '',
   appId: 'school-helper',
   failureStreak: 0,
   droppedTotal: 0,
@@ -98,6 +100,8 @@ export interface LinkOptions {
 export async function makeTransport(options: LinkOptions = {}): Promise<JarvisTransport> {
   if (options.transport) return options.transport;
   const settings = await jarvisSettings();
+  const baseUrl = settings.baseUrl?.trim() ?? '';
+  if (!baseUrl) throw new TransportError('gateway-url-unset');
   const store = options.store ?? keyStore();
   return new GatewayTransport({
     store,
@@ -171,8 +175,12 @@ export async function checkPairing(options: LinkOptions = {}) {
     });
     return result;
   } catch (error) {
+    const expired = error instanceof TransportError && error.status === 410;
     await patchJarvis({
-      pairing: { status: 'unavailable-or-refused', deviceLabel: identity.deviceLabel as string },
+      pairing: {
+        status: expired ? 'expired' : 'unavailable-or-refused',
+        deviceLabel: identity.deviceLabel as string,
+      },
     });
     throw error;
   }

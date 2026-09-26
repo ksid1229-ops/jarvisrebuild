@@ -12,6 +12,15 @@ import type { JsonValue } from "./signed-request.js";
 export type SchoolItemKind =
   | "assignment" | "quiz" | "discussion" | "announcement" | "lesson" | "unit" | "other";
 
+export interface ContentRef {
+  /** The Content tile's own view of work that lives on another tile. */
+  title: string;
+  url: string | null;
+  dueAt: string | null;
+  startAt: string | null;
+  endAt: string | null;
+}
+
 export interface SchoolItem {
   id: string;
   kind: SchoolItemKind;
@@ -34,6 +43,8 @@ export interface SchoolItem {
   ambiguousSubmissions: boolean;
   fetchedAt: string;
   readId: string;
+  /** Other tiles' views of this same work: portrayals, never adjudicated. */
+  contentRefs: ContentRef[];
 }
 
 export interface SchoolGrade {
@@ -138,7 +149,7 @@ function baseItem(
     status: null, submittedAt: null, grade: null, gradeMax: null,
     weight: null, feedback: null, description: null,
     descriptionTruncated: false, ambiguousSubmissions: false,
-    fetchedAt, readId: batch.readId,
+    fetchedAt, readId: batch.readId, contentRefs: [],
   };
 }
 
@@ -297,6 +308,7 @@ export function extractEvidence(batch: SchoolObservationBatch): ExtractedEvidenc
         const kind: SchoolItemKind = topic.isModule ? "unit" : "lesson";
         const item = baseItem(batch, courseId, courseName, kind, topic.remoteId, topic.title, read.fetchedAt);
         item.url = topic.url;
+        item.dueAt = topic.dueAt;
         item.startAt = topic.startAt;
         item.endAt = topic.endAt;
         items.push(item);
@@ -353,6 +365,23 @@ export function extractEvidence(batch: SchoolObservationBatch): ExtractedEvidenc
     if (target && w !== null && target.weight === null) target.weight = w;
   }
 
+  // Cross-surface linkage: a Content topic that links at an assignment or quiz
+  // attaches the Content tile's own view (title, url, dates) to that item, so
+  // the model sees both portrayals side by side and adjudicates the deadline.
+  for (const item of items) {
+    if (item.kind !== "lesson" && item.kind !== "unit") continue;
+    const link = detectActivityLink(item.url);
+    if (!link || link.kind === "discussion") continue;
+    const target = link.kind === "assignment"
+      ? dropboxFolders.get(link.remoteId)
+      : quizItems.get(link.remoteId);
+    if (!target || target.id === item.id) continue;
+    target.contentRefs.push({
+      title: item.title, url: item.url,
+      dueAt: item.dueAt, startAt: item.startAt, endAt: item.endAt,
+    });
+  }
+
   // Submissions: exactly-one applies; empty means not submitted (D2L said so);
   // multiple is ambiguous and must not be guessed at.
   for (const [folderId, sub] of submissions) {
@@ -394,6 +423,24 @@ export function extractEvidence(batch: SchoolObservationBatch): ExtractedEvidenc
   return { items, grades, courses, readFailures };
 }
 
+const ACTIVITY_PATTERNS: [RegExp, "assignment" | "quiz" | "discussion"][] = [
+  [/\/dropbox\/user\/folder_submit_files\.d2l\?db=(\d+)/i, "assignment"],
+  [/\/dropbox\/.*?[?&](?:db|folderId)=(\d+)/i, "assignment"],
+  [/\/quizzing\/user\/quiz_summary\.d2l\?qi=(\d+)/i, "quiz"],
+  [/\/quizzing\/.*?[?&]qi=(\d+)/i, "quiz"],
+  [/\/discussions\/topics\/(\d+)/i, "discussion"],
+  [/\/discussions\/.*?[?&]tId=(\d+)/i, "discussion"],
+];
+
+function detectActivityLink(url: string | null): { kind: "assignment" | "quiz" | "discussion"; remoteId: string } | null {
+  if (!url) return null;
+  for (const [re, kind] of ACTIVITY_PATTERNS) {
+    const m = re.exec(url);
+    if (m?.[1]) return { kind, remoteId: m[1] };
+  }
+  return null;
+}
+
 function collectorFailureCode(body: JsonValue): string {
   if (isRec(body)) {
     const code = str(body.collectorFailure);
@@ -420,7 +467,7 @@ function enrollmentCourse(entry: unknown): EnrolledCourse | null {
 
 interface TopicWalk {
   remoteId: string; title: string; isModule: boolean;
-  url: string | null; startAt: string | null; endAt: string | null;
+  url: string | null; startAt: string | null; endAt: string | null; dueAt: string | null;
 }
 
 /**
@@ -441,6 +488,7 @@ function walkContent(body: JsonValue, host: string): TopicWalk[] {
       url: path && path.startsWith("/") ? `https://${host}${path}` : null,
       startAt: iso(node.StartDate) ?? iso(node.ModuleStartDate),
       endAt: iso(node.EndDate) ?? iso(node.ModuleEndDate),
+      dueAt: iso(node.DueDate) ?? iso(node.ModuleDueDate),
     });
   };
   const visit = (node: unknown): void => {

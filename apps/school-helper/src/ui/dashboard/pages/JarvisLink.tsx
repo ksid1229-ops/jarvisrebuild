@@ -10,6 +10,7 @@ const STATUS_LABEL: Record<string, string> = {
   unpaired: 'Not paired',
   pending: 'Waiting for your approval in Telegram',
   active: 'Paired and active',
+  expired: 'Pairing expired — pair again',
   'unavailable-or-refused': 'Gateway unavailable or refused',
 };
 
@@ -126,6 +127,21 @@ export function JarvisLinkPanel(): JSX.Element {
       });
     });
 
+  const pullNow = () =>
+    act('pull', async () => {
+      const result = await send<{ pulled: number; ran: string[]; error: string | null } | null>({
+        type: 'jarvis:pull',
+      });
+      setMessage({
+        kind: result?.error ? 'bad' : 'ok',
+        text: !result
+          ? 'Link is off or unpaired.'
+          : result.error
+            ? result.error
+            : `Checked: ${result.pulled} request(s), ran ${result.ran.length}.`,
+      });
+    });
+
   const paired = jarvis.pairing?.status === 'active';
 
   return (
@@ -181,13 +197,14 @@ export function JarvisLinkPanel(): JSX.Element {
           type="url"
           value={jarvis.baseUrl}
           disabled={paired}
+          placeholder="https://your-worker.workers.dev"
           onChange={(e) => void patch({ baseUrl: e.target.value })}
         />
       </label>
       <p className="sub" style={{ marginTop: 4 }}>
         {paired
           ? 'Locked while paired: the device key is bound to this gateway. Unpair to change it.'
-          : 'https, or http://localhost for testing. Permission for this origin is requested when you save.'}
+          : 'Paste the URL wrangler shows after deploy (https, or http://localhost for testing). Permission is requested when you pair.'}
       </p>
 
       <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'flex-end' }}>
@@ -225,6 +242,9 @@ export function JarvisLinkPanel(): JSX.Element {
         </button>
         <button className="btn" disabled={!!busy || !paired} onClick={flush}>
           {busy === 'flush' ? 'Sending…' : `Retry queue (${queued})`}
+        </button>
+        <button className="btn" disabled={!!busy || !paired || !jarvis.enabled} onClick={pullNow}>
+          {busy === 'pull' ? 'Checking…' : 'Check for Jarvis requests'}
         </button>
       </div>
 

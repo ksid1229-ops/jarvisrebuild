@@ -12,14 +12,22 @@ export interface PriorityBreakdown {
   reason: string;
 }
 
-const GRADED_KINDS = new Set(['assignment', 'quiz', 'discussion']);
+const GRADED_KINDS = new Set(['assignment', 'quiz']);
+
+/**
+ * Only these tiles carry real deadlines. Every other kind keeps its dates as
+ * data, but is never bucketed, scored or labelled as due — blending every
+ * surface's dates into one due list is how a whole business class ended up
+ * "overdue". Jarvis adjudicates the true deadlines; the tracker portrays.
+ */
+export const DEADLINE_KINDS = new Set(['assignment', 'quiz']);
 
 /**
  * Priority = due date urgency + weight + overdue penalty.
  * Range is roughly 0..100. Higher means do it sooner.
  */
 export function priorityOf(item: WorkItem, now = Date.now()): PriorityBreakdown {
-  const due = effectiveDue(item);
+  const due = DEADLINE_KINDS.has(item.kind) ? effectiveDue(item) : null;
   const done = isDone(item);
 
   if (done) {
@@ -96,7 +104,7 @@ export type Bucket = 'overdue' | 'today' | 'tomorrow' | 'this-week' | 'later' | 
 
 export function bucketOf(item: WorkItem, now = Date.now()): Bucket {
   if (isDone(item)) return 'done';
-  const due = effectiveDue(item);
+  const due = DEADLINE_KINDS.has(item.kind) ? effectiveDue(item) : null;
   if (due == null) return 'no-date';
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);

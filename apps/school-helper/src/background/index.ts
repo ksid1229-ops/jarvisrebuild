@@ -14,13 +14,22 @@
 
 import { db, getSettings } from '../common/db';
 import type { Message, SyncStatus } from '../common/messaging';
+import { BOARDS } from '../common/settings';
 import type { BoardId } from '../common/types';
 import { runSync, summariseChanges } from '../d2l/sync';
 import { exportFixtures } from '../d2l/capture';
 import { D2lClient } from '../d2l/client';
 import { ensureDurhamSession } from '../d2l/sso';
 import { pushEvidence } from '../jarvis/push';
-import { checkPairing, flushOutboxNow, jarvisSettings, startPairing } from '../jarvis/link';
+import {
+  checkPairing,
+  flushOutboxNow,
+  jarvisSettings,
+  log as logJarvis,
+  makeTransport,
+  startPairing,
+} from '../jarvis/link';
+import { pullAndExecute, type PullOutcome } from '../jarvis/pull';
 import {
   DAY_SUMMARY_ALARM,
   SYNC_ALARM,
@@ -41,6 +50,7 @@ const BROWSE_SYNC_COOLDOWN = 10 * 60_000;
 chrome.runtime.onInstalled.addListener(async (details) => {
   await getSettings(); // materialise defaults
   await rescheduleReminders();
+  await chrome.alarms.create(JARVIS_PULL_ALARM, { periodInMinutes: 2 });
   if (details.reason === 'install') {
     await openDashboard('#/welcome');
   }
@@ -48,6 +58,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void rescheduleReminders();
+  void chrome.alarms.create(JARVIS_PULL_ALARM, { periodInMinutes: 2 });
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -82,6 +93,7 @@ async function maybeBrowseSync(): Promise<void> {
 }
 
 const JARVIS_ALARM = 'jarvis-flush';
+const JARVIS_PULL_ALARM = 'jarvis-pull';
 
 /**
  * Sends evidence to Jarvis. Always best-effort: a link failure must never turn
@@ -105,6 +117,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === JARVIS_ALARM) {
     // Retry anything the last push could not deliver, on the existing cadence.
     await flushOutboxNow().catch(() => undefined);
+    return;
+  }
+  if (alarm.name === JARVIS_PULL_ALARM) {
+    await pullFromJarvis();
     return;
   }
   if (alarm.name === SYNC_ALARM) {
@@ -153,6 +169,8 @@ async function handle(msg: Message): Promise<unknown> {
       return flushOutboxNow();
     case 'jarvis:push':
       return pushToJarvis();
+    case 'jarvis:pull':
+      return pullFromJarvis();
     case 'fixtures:export':
       return exportFixtures();
     case 'notify:test':
@@ -164,6 +182,40 @@ async function handle(msg: Message): Promise<unknown> {
       });
     default:
       return null;
+  }
+}
+
+/**
+ * Collects Jarvis's queued requests (sync_now, open_item). Best-effort like
+ * the push: a pull failure is logged, never thrown into the alarm handler.
+ * Returns null when the link is off or unpaired.
+ */
+async function pullFromJarvis(): Promise<PullOutcome | null> {
+  try {
+    const settings = await jarvisSettings();
+    if (!settings.enabled || settings.pairing?.status !== 'active') return null;
+    return await pullAndExecute({
+      transport: () => makeTransport(),
+      isLinked: async () => true,
+      runSync: () => doSync({ trigger: 'alarm' }),
+      openUrl: async (url) => {
+        await chrome.tabs.create({ url });
+      },
+      allowedOrigins: [BOARDS.ldsb.origin, BOARDS.durham.origin],
+      log: async (entry) => {
+        await logJarvis({
+          endpoint: entry.endpoint,
+          method: 'POST',
+          status: 200,
+          ok: entry.ok,
+          itemCount: 0,
+          detail: entry.detail,
+        });
+      },
+    });
+  } catch (err) {
+    console.warn('[jarvis] pull failed', (err as Error).message);
+    return null;
   }
 }
 

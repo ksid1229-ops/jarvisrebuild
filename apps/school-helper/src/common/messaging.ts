@@ -26,7 +26,8 @@ export type Message =
   | { type: 'jarvis:pair'; deviceLabel: string }
   | { type: 'jarvis:check' }
   | { type: 'jarvis:flush' }
-  | { type: 'jarvis:push' };
+  | { type: 'jarvis:push' }
+  | { type: 'jarvis:pull' };
 
 export interface SyncStatus {
   running: boolean;

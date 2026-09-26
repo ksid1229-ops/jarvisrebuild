@@ -18,6 +18,7 @@ export const PATHS = Object.freeze([
   '/school/pairing/prove',
   '/school/pairing/status',
   '/school/observations',
+  '/school/pull',
 ] as const);
 
 export type JarvisPath = (typeof PATHS)[number];
@@ -45,7 +46,8 @@ export interface SignedEnvelope {
   deviceId: string;
   principalId: string;
   audience: string;
-  issuedAt: number;
+  /** ISO-8601 UTC string. The receiver rejects numeric timestamps. */
+  issuedAt: string;
   nonce: string;
   bodyHash: string;
   signatureBase64: string;
@@ -80,7 +82,7 @@ export async function sign(
   body: string,
   pair: CryptoKeyPair,
   identity: DeviceIdentity,
-  issuedAt: number,
+  issuedAtMs: number,
   cryptoImpl: Crypto = crypto,
 ): Promise<SignedEnvelope> {
   if (!(SIGNED_PATHS as readonly string[]).includes(path)) throw new Error('invalid-signed-path');
@@ -93,7 +95,7 @@ export async function sign(
     deviceId: identity.collectorId,
     principalId: identity.principalId,
     audience: AUDIENCE,
-    issuedAt,
+    issuedAt: new Date(issuedAtMs).toISOString(),
     nonce,
     bodyHash,
   };

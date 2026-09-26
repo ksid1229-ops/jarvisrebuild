@@ -179,3 +179,24 @@ describe('Jarvis gateway transport — failure modes', () => {
     expect(transport.origins()).toEqual(['https://gateway.test/*']);
   });
 });
+
+describe('Jarvis gateway transport — envelope time + pull', () => {
+  it('signs issuedAt as an ISO-8601 string the receiver accepts', async () => {
+    const { fake } = await paired();
+    const signed = fake.calls.filter((c) => c.envelope);
+    expect(signed.length).toBeGreaterThan(0);
+    for (const call of signed) {
+      expect(typeof call.envelope?.issuedAt).toBe('string');
+      expect(Number.isNaN(Date.parse(call.envelope!.issuedAt as string))).toBe(false);
+    }
+  });
+
+  it('pulls queued requests and validates the shape', async () => {
+    const { fake, transport } = await paired();
+    fake.pullRequests = [{ requestId: 'sreq_1', action: 'sync_now', args: { reason: 'x' } }];
+    const pulled = await transport.pullRequests();
+    expect(pulled).toEqual([{ requestId: 'sreq_1', action: 'sync_now', args: { reason: 'x' } }]);
+    fake.pullRequests = [{ requestId: 7 } as never];
+    await expect(transport.pullRequests()).rejects.toThrow('invalid-pull-response');
+  });
+});

@@ -276,3 +276,39 @@ Built by:
 | same-turn self-confirm | dropped the `creatingEventId === currentEventId` check | phase4 self-confirm | yes |
 | confirmation gate | ran the tool directly in `dispatch` for confirmable | phase4 "held as pending" | yes |
 | temporary expiry | `isActive` ignored `expiresAt` | phase2 temporary expiry | yes |
+
+---
+
+## Increment: school app connection-ready + pull channel (2026-09-26)
+
+User direction: the school app tracks only the five D2L tiles (Course Home / Content /
+Assignments / Grades / Quizzes) through the existing surfaces, sends raw per-surface
+evidence, and never synthesizes due dates; Jarvis adjudicates due dates from linked
+surfaces and asks Sid when uncertain. Jarvis stays read-only toward school.
+
+Jarvis side (`src/school/`, protocol-compatible with the old cloud-gateway collector
+contract — Ed25519, 5-min skew, race-safe nonces, active-key-only):
+- `POST /school/pull` — signed, oldest-first handover of up to 10 queued requests,
+  marks them delivered; pending/unknown keys get 403.
+- `contentRefs[]` on assignment/quiz evidence + topic `dueAt` capture: links
+  dropbox/quiz items to the Content topics that carry real due dates
+  (fixture: Lesson 1.1 -> 2026-09-12T03:59:00.000Z).
+- School tools now carry due-date adjudication guidance: link surfaces first,
+  `memory_save` only confirmed dates, ask Sid when uncertain.
+
+App side (`apps/school-helper/`):
+- Sync scope cut to the tiles: no completion-progress, rubric, or discussion reads;
+  new `gradeObjects` evidence route for `/grades/` (object definitions).
+- Envelope `issuedAt` is now an ISO-8601 string (receiver requirement, was epoch ms).
+- Gateway URL default emptied (old cloud URL must never be usable); unset URL
+  refuses to send; pairing `410` maps to new `expired` status.
+- `jarvis-pull` alarm (2 min) + `jarvis:pull` message + `pullAndExecute`:
+  `sync_now` runs sync/push, `open_item` opens only allow-listed D2L origins.
+- Due/overdue language gated to assignments + quizzes (`DEADLINE_KINDS`); other
+  tiles show availability; JarvisLink UI has pull button + corrected help text.
+
+Verification: root `tsc` clean, `vitest` 105/105; app `tsc` clean, `vitest` 238/238.
+
+Repo note: this branch's history is `18b0570` (PR #1 school app) -> `6a34ccf`
+(collector protocol) -> `3f1bc3a` (D1 persistence) -> `5bd2f20` (school routes +
+pairing + tools) -> this increment.

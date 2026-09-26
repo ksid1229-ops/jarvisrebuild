@@ -1,6 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { Course, WorkItem } from '../../common/types';
-import { bucketOf, effectiveDue, humanIn, isDone, priorityOf } from '../../common/priority';
+import {
+  DEADLINE_KINDS,
+  bucketOf,
+  effectiveDue,
+  humanIn,
+  isDone,
+  priorityOf,
+} from '../../common/priority';
 import { describeCall, type Disclosure } from '../../ai';
 import type { CompletionRequest } from '../../ai/provider';
 
@@ -30,6 +37,21 @@ export function formatDue(ms: number | null | undefined): string {
   const time = d.toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' });
   if (ms < now) return `${date} — ${humanIn(now - ms)} overdue`;
   return `${date}, ${time} (in ${humanIn(ms - now)})`;
+}
+
+/**
+ * Honest date text for tiles that carry no deadlines (Content, Course Home).
+ * Shows the availability window instead of due/overdue language.
+ */
+export function formatAvailability(item: WorkItem): string {
+  const fmt = (ms: number) =>
+    new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  if (item.startAt != null && item.endAt != null)
+    return `${fmt(item.startAt)} \u2013 ${fmt(item.endAt)}`;
+  if (item.endAt != null) return `until ${fmt(item.endAt)}`;
+  if (item.startAt != null) return `from ${fmt(item.startAt)}`;
+  if (item.dueAt != null) return `dated ${fmt(item.dueAt)}`;
+  return 'No dates';
 }
 
 export function ItemRow({
@@ -82,7 +104,7 @@ export function ItemRow({
           )}
           <Pill>{item.kind}</Pill>
           <Pill kind={bucket === 'overdue' ? 'overdue' : bucket === 'today' ? 'today' : undefined}>
-            {formatDue(due)}
+            {DEADLINE_KINDS.has(item.kind) ? formatDue(due) : formatAvailability(item)}
           </Pill>
           {item.weight != null && <Pill>{item.weight}% of grade</Pill>}
           {item.points != null && <Pill>{item.points} pts</Pill>}

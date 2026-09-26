@@ -37,6 +37,7 @@ export class FakeJarvis {
   private publicKey?: CryptoKey;
   private challenge = 'challenge-abc';
   private approved = false;
+  pullRequests: { requestId: string; action: string; args: unknown }[] = [];
   private proved = false;
   private readonly nonces = new Set<string>();
   private remainingFailures: number;
@@ -110,6 +111,11 @@ export class FakeJarvis {
 
       if (path === '/school/pairing/status') {
         return json({ status: this.approved && this.proved ? 'active' : 'pending' });
+      }
+
+      if (path === '/school/pull') {
+        if (!this.approved) return json({ error: 'school_key_inactive' }, 403);
+        return json({ requests: this.pullRequests });
       }
 
       if (path === '/school/observations') {

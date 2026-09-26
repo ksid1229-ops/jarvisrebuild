@@ -18,6 +18,7 @@ import {
   schoolSnapshotRead,
   schoolSyncRequest,
 } from "../src/school/school-tools.js";
+import { SchoolRequests } from "../src/school/school-requests.js";
 import { freshDb } from "./d1-testkit.js";
 import { genKeypair, publicKeyB64, signEnvelope } from "./school-testkit.js";
 import { makeHarness, ownerEvent } from "./helpers.js";
@@ -261,6 +262,14 @@ describe("evidence extractors (real D2L fixtures)", () => {
     expect(quiz?.url).toContain("quiz_summary.d2l?qi=44021&ou=29940528");
     expect(ext.items.some((i) => i.title.includes("Archived practice"))).toBe(false);
 
+    // Cross-surface linkage: the Content topic "Submit: Unit 1 Worksheet" points
+    // at this same folder, so its view rides along for adjudication.
+    expect(worksheet?.contentRefs).toHaveLength(1);
+    expect(worksheet?.contentRefs[0]).toMatchObject({ title: "Submit: Unit 1 Worksheet" });
+    expect(worksheet?.contentRefs[0]?.url).toContain("db=550012");
+    const lesson = ext.items.find((i) => i.kind === "lesson" && i.title.includes("Lesson 1.1"));
+    expect(lesson?.dueAt).toBe("2026-09-12T03:59:00.000Z");
+
     const calc = ext.grades.find((g) => g.name === "Final Calculated Grade");
     expect(calc).toMatchObject({ grade: 82, gradeMax: 100 });
     expect(ext.readFailures).toEqual([]);
@@ -440,5 +449,45 @@ describe("school tools", () => {
     expect(h.dispatcher.list().some((t) => t.name === "school_snapshot_read")).toBe(false);
     const snap = await schoolSnapshotRead.run({}, ctx);
     expect(snap).toMatchObject({ ok: false, status: "not_connected" });
+  });
+});
+
+describe("school pull channel", () => {
+  it("hands over queued requests oldest-first and marks them delivered", async () => {
+    const clock = new FixedClock("2026-09-26T19:00:00.000Z");
+    const deps = depsFor(clock);
+    const device = await startPairing(deps);
+    await deps.db.prepare(`UPDATE school_collector_keys SET status = 'active' WHERE collector_id = ?`)
+      .bind(device.collectorId).run();
+    const requests = new SchoolRequests(deps.db);
+    await requests.enqueue("sreq_1", "sync_now", { reason: "stale" }, clock.nowIso());
+    clock.advance(1000);
+    await requests.enqueue("sreq_2", "open_item", { itemUrl: "https://ldsb.elearningontario.ca/x" }, clock.nowIso());
+
+    const first = await signed(deps, "/school/pull", device.keys, device.collectorId,
+      canonical({}), clock.nowIso());
+    expect(first.status).toBe(200);
+    const body = first.body as { requests: { requestId: string; action: string; args: unknown }[] };
+    expect(body.requests.map((r) => r.requestId)).toEqual(["sreq_1", "sreq_2"]);
+    expect(body.requests[0]).toMatchObject({ action: "sync_now", args: { reason: "stale" } });
+
+    const second = await signed(deps, "/school/pull", device.keys, device.collectorId,
+      canonical({}), clock.nowIso());
+    expect((second.body as { requests: unknown[] }).requests).toEqual([]);
+    expect(await requests.queuedCount()).toBe(0);
+  });
+
+  it("refuses pull for pending keys and rejects bad bodies", async () => {
+    const clock = new FixedClock("2026-09-26T19:00:00.000Z");
+    const deps = depsFor(clock);
+    const pending = await startPairing(deps);
+    const blocked = await signed(deps, "/school/pull", pending.keys, pending.collectorId,
+      canonical({}), clock.nowIso());
+    expect(blocked.status).toBe(403);
+
+    const stranger = await genKeypair();
+    const unknown = await signed(deps, "/school/pull", stranger, "col_stranger",
+      canonical({}), clock.nowIso());
+    expect(unknown.status).toBe(403);
   });
 });

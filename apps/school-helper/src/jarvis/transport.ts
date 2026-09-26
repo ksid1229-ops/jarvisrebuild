@@ -7,9 +7,10 @@
  * contract can be added later without touching the outbox, the link service,
  * the background worker or the UI.
  *
- * Deliberately NOT here: any "pull" method. The gateway has no route for an
- * extension to ask for instructions, so there is no dead stub pretending
- * otherwise. See KNOWN_ISSUES.md #15.
+ * Pull lives here too: `pullRequests` asks the gateway what Jarvis wants
+ * (POST /school/pull, signed). The extension can only be reached this way —
+ * MV3 ended push — so Jarvis queues sync_now/open_item requests and the
+ * background alarm collects them.
  */
 
 import { canonical } from './canonical';
@@ -32,6 +33,12 @@ export interface PairingStatusResult {
 export interface ObservationReceipt {
   batchId: string;
   outcome: 'good' | 'failed';
+}
+
+export interface PulledRequest {
+  requestId: string;
+  action: string;
+  args: unknown;
 }
 
 export interface TransportCall {
@@ -58,6 +65,8 @@ export interface JarvisTransport {
   pairingStatus(): Promise<PairingStatusResult>;
   /** Sends one already-canonicalized body. Must not re-serialize it. */
   sendObservation(body: string): Promise<ObservationReceipt>;
+  /** Pulls Jarvis's queued requests (sync_now, open_item). Empty when none. */
+  pullRequests(): Promise<PulledRequest[]>;
 }
 
 export class TransportError extends Error {
@@ -216,5 +225,20 @@ export class GatewayTransport implements JarvisTransport {
       throw new TransportError('invalid-receipt');
     }
     return receipt;
+  }
+
+  async pullRequests(): Promise<PulledRequest[]> {
+    const result = (await this.signedPost('/school/pull', '{}')) as { requests?: unknown };
+    if (!result || !Array.isArray(result.requests)) throw new TransportError('invalid-pull-response');
+    const out: PulledRequest[] = [];
+    for (const entry of result.requests) {
+      if (typeof entry !== 'object' || entry === null) throw new TransportError('invalid-pull-response');
+      const rec = entry as Record<string, unknown>;
+      if (typeof rec.requestId !== 'string' || typeof rec.action !== 'string') {
+        throw new TransportError('invalid-pull-response');
+      }
+      out.push({ requestId: rec.requestId, action: rec.action, args: rec.args ?? null });
+    }
+    return out;
   }
 }

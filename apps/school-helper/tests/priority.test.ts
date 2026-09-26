@@ -100,3 +100,17 @@ describe('planning helpers', () => {
     expect(Math.abs(sat.totalScore - sun.totalScore)).toBeLessThan(80);
   });
 });
+
+describe('deadline tiles', () => {
+  it('buckets lessons by availability, never as due — even past their end date', () => {
+    const lesson = item({ kind: 'lesson', dueAt: null, endAt: NOW - DAY });
+    expect(bucketOf(lesson, NOW)).toBe('no-date');
+    expect(priorityOf(lesson, NOW).reason).toContain('no due date');
+  });
+
+  it('still buckets assignments and quizzes by their due dates', () => {
+    expect(bucketOf(item({ kind: 'assignment', dueAt: NOW - 1000 }), NOW)).toBe('overdue');
+    expect(bucketOf(item({ kind: 'quiz', dueAt: NOW - 1000 }), NOW)).toBe('overdue');
+    expect(bucketOf(item({ kind: 'assignment', dueAt: NOW + DAY }), NOW)).toBe('tomorrow');
+  });
+});

@@ -72,7 +72,12 @@ export const schoolSnapshotRead: Tool = {
     "open, so ALWAYS report the evidenceAsOf freshness per course and never claim anything is " +
     "current. due_before/due_after filter by due date (a dueAt of null means the deadline is " +
     "UNKNOWN, never 'no deadline'). kinds filters to assignment, quiz, announcement, lesson, unit, " +
-    "other. Discussions are not pushed by the extension yet. include_completed defaults false.",
+    "other. Discussions are not pushed by the extension yet. include_completed defaults false. " +
+    "Due dates are YOURS to adjudicate: the same work can show different dates on different D2L " +
+    "surfaces (contentRefs carry the Content tile's own view of an assignment or quiz). Before " +
+    "answering about a deadline, check memory for a Sid-confirmed date; if the surfaces conflict, " +
+    "the date is null, or it only appears in prose, ASK Sid and record his answer with memory_save " +
+    "so it sticks.",
   parameters: {
     type: "object",
     properties: {
@@ -267,7 +272,9 @@ export const schoolSyncRequest: Tool = {
   description:
     "Ask the School Helper extension to push fresh evidence. The request sits in a queue that " +
     "the extension pulls on its own schedule, so it only works while Sid's browser is open — it " +
-    "is NOT instant. reason tells Sid why (shown in the extension).",
+    "is NOT instant. reason tells Sid why (shown in the extension). If Sid says a date you " +
+    "reported is wrong, ask him for the right one and record it with memory_save — do not " +
+    "re-report the disputed evidence date as fact.",
   parameters: {
     type: "object",
     properties: {
