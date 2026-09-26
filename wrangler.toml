@@ -1,0 +1,61 @@
+# Jarvis rebuild (agent-1) — Cloudflare Workers config.
+# This is the production shape. Sid deploys it (see README.md). Secrets are set
+# with `wrangler secret put`, never committed.
+
+name = "jarvis-rebuild"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# --- Durable Object: the Jarvis brain (one per owner) ---
+[[durable_objects.bindings]]
+name = "JARVIS"
+class_name = "JarvisDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["JarvisDurableObject"]
+
+# --- D1: structured data ---
+[[d1_databases]]
+binding = "DB"
+database_name = "jarvis"
+database_id = "REPLACE_WITH_D1_ID"
+migrations_dir = "migrations"
+
+# --- R2: raw emails, archive, backups ---
+[[r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "jarvis-archive"
+
+[[r2_buckets]]
+binding = "BACKUP"
+bucket_name = "jarvis-backup"
+
+# --- Vectorize: meaning search over memory ---
+[[vectorize]]
+binding = "MEMORY_VECTORS"
+index_name = "jarvis-memory"
+
+# --- Workers AI: embeddings ---
+[ai]
+binding = "AI"
+
+# --- Queues: slow work such as email processing ---
+[[queues.producers]]
+binding = "WORK_QUEUE"
+queue = "jarvis-work"
+
+[[queues.consumers]]
+queue = "jarvis-work"
+
+# --- Cron: hourly poll + nightly backup (see scheduler) ---
+[triggers]
+crons = ["0 * * * *", "30 5 * * *"]
+
+# Non-secret vars. Secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET,
+# OWNER_ACTION_PIN, DEEPSEEK_API_KEY, VAULT_EXPORT_TOKEN, TWILIO_*) are set with
+# `wrangler secret put NAME` and are NOT stored here.
+[vars]
+OWNER_TIMEZONE = "America/Toronto"
+DEEPSEEK_MODEL = "deepseek-flash"
