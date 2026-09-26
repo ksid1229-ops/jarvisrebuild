@@ -1,0 +1,28 @@
+{
+  "Objects": [
+    {
+      "QuizId": 44021,
+      "Name": "Unit 1 Check-in Quiz",
+      "IsActive": true,
+      "SortOrder": 1,
+      "AutoExportToGrades": true,
+      "GradeItemId": 60020,
+      "Instructions": { "Text": { "Text": "Ten multiple choice questions.", "Html": "<p>Ten multiple choice questions.</p>" }, "IsDisplayed": true },
+      "Description": { "Text": { "Text": "Covers lessons 1.1 to 1.4.", "Html": "<p>Covers lessons 1.1 to 1.4.</p>" }, "IsDisplayed": true },
+      "StartDate": "2026-09-14T04:00:00.000Z",
+      "EndDate": "2026-09-21T03:59:00.000Z",
+      "DueDate": "2026-09-20T03:59:00.000Z",
+      "DisplayInCalendar": true,
+      "AttemptsAllowed": { "IsUnlimited": false, "NumberOfAttemptsAllowed": 2 },
+      "CategoryId": null
+    },
+    {
+      "QuizId": 44022,
+      "Name": "Archived practice quiz",
+      "IsActive": false,
+      "StartDate": null,
+      "EndDate": null,
+      "DueDate": null
+    }
+  ]
+}

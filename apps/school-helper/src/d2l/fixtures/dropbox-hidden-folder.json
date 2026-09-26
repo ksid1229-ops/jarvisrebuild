@@ -1,0 +1,11 @@
+{
+  "Id": 550099,
+  "CategoryId": null,
+  "Name": "Make-up Task — Unit 1 (linked from content only)",
+  "CustomInstructions": { "Text": "For students who missed the in-class activity.", "Html": "<p>For students who missed the in-class activity.</p>" },
+  "DueDate": "2026-09-30T03:59:00.000Z",
+  "Availability": { "StartDate": null, "EndDate": null },
+  "IsHidden": true,
+  "Assessment": { "ScoreDenominator": 10, "Rubrics": [] },
+  "GradeItemId": null
+}
