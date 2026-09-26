@@ -8,20 +8,30 @@ import { TelegramChannel } from "./channels/telegram-channel.js";
 import { FakeEmbeddingProvider, InMemoryVectorIndex, WorkersAiEmbeddingProvider } from "./memory/embeddings.js";
 import { newId } from "./ids.js";
 import type { JarvisEvent } from "./jarvis/agent-core.js";
-import { AppEventsRepo, wakeOnAppEvent } from "./apps/app-events.js";
+import { AppEventsRepo, D1AppEventsRepo, wakeOnAppEvent } from "./apps/app-events.js";
 import { buildConnectTwiml } from "./voice/twiml.js";
 import { verifyTwilioSignature } from "./voice/twilio-signature.js";
 import { handleCron } from "./scheduler/cron.js";
 import { buildVaultExport, authorizeVaultExport } from "./plumbing/vault.js";
+import type { D1Db } from "./persistence/d1.js";
+import { D1FactsRepo } from "./memory/facts-repo.js";
+import { D1ConversationRepo } from "./conversation/conversation-repo.js";
+import { D1ReceiptsRepo } from "./receipts/receipts-repo.js";
+import { D1PendingActionsRepo } from "./confirmations/pending-actions.js";
+import { D1SettingsRepo } from "./settings/settings-repo.js";
+import { D1ConnectedAppsRepo } from "./apps/app-registry.js";
+import { D1GuestsRepo } from "./voice/guests-repo.js";
+import { D1WakeupsRepo } from "./scheduler/wakeups-repo.js";
+import { D1HeartbeatRepo } from "./plumbing/heartbeat.js";
 
 /**
  * Worker router. Receives Telegram webhooks, verifies them (fail closed), and
  * hands the owner's update to the Jarvis Durable Object.
  *
- * HONESTY / KNOWN LIMIT: this build's repositories are in-memory (fully tested).
- * A D1/DO-storage-backed persistence adapter is the documented next step
- * (see rebuild/PROGRESS.md). The DO keeps state for its lifetime; it is not yet
- * persisted across evictions. Nothing here fakes success.
+ * Storage: when the DB binding is present the DO runs on D1-backed stores
+ * (same interfaces, same semantics, real persistence across evictions). Without
+ * it — local dev with no D1 — it falls back to in-memory stores, which lose
+ * state on eviction. Nothing here fakes success either way.
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -160,6 +170,22 @@ export class JarvisDurableObject {
 
     const ownerChannel = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", chatId);
 
+    // Production storage: D1 when bound, in-memory otherwise (local dev).
+    const db = this.env.DB as D1Db | undefined;
+    const stores = db
+      ? {
+          facts: new D1FactsRepo(db, clock),
+          conversation: new D1ConversationRepo(db, clock),
+          receipts: new D1ReceiptsRepo(db, clock),
+          pending: new D1PendingActionsRepo(db, clock),
+          settings: new D1SettingsRepo(db),
+          appsRepo: new D1ConnectedAppsRepo(db, clock),
+          guests: new D1GuestsRepo(db, clock),
+          wakeupsRepo: new D1WakeupsRepo(db, clock),
+          heartbeat: new D1HeartbeatRepo(db, clock),
+        }
+      : undefined;
+
     this.built = buildJarvis({
       model,
       clock,
@@ -168,6 +194,7 @@ export class JarvisDurableObject {
       ownerChannel,
       ownerId: chatId,
       timezone: this.env.OWNER_TIMEZONE ?? "America/Toronto",
+      ...(stores ? { stores } : {}),
       ...(this.env.OWNER_ACTION_PIN ? { ownerPin: this.env.OWNER_ACTION_PIN } : {}),
       ...(this.env.OWNER_PIN_PEPPER ? { pinPepper: this.env.OWNER_PIN_PEPPER } : {}),
     });
@@ -239,13 +266,16 @@ export class JarvisDurableObject {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
     }
-    const app = built.appsRepo.byName(String(body.appName ?? ""));
+    const app = await built.appsRepo.byName(String(body.appName ?? ""));
     // Verify the app is registered and the secret matches. Fail closed.
     if (!app || !body.authSecret || body.authSecret !== app.authSecret) {
       return json({ ok: false, reason: "unknown app or bad secret" }, 401);
     }
-    const events = new AppEventsRepo(new SystemClock());
-    const ev = events.store(app.name, body.payload);
+    const db = this.env.DB as D1Db | undefined;
+    const events = db
+      ? new D1AppEventsRepo(db, new SystemClock())
+      : new AppEventsRepo(new SystemClock());
+    const ev = await events.store(app.name, body.payload);
     const result = await wakeOnAppEvent(built.agent, ev, ownerId);
     return json({ ok: !result.error, note: "event delivered to Jarvis" });
   }
@@ -284,7 +314,7 @@ export class JarvisDurableObject {
     if (!authorizeVaultExport(token, this.env.VAULT_EXPORT_TOKEN)) {
       return json({ ok: false, reason: "vault export requires a valid token" }, 401);
     }
-    const exported = buildVaultExport(built.facts.all(), built.wakeupsRepo.list());
+    const exported = buildVaultExport(await built.facts.all(), await built.wakeupsRepo.list());
     return json({ ok: true, count: exported.count, notes: exported.notes });
   }
 }

@@ -84,7 +84,7 @@ describe("Phase 3: connected apps (the plug)", () => {
     await h.apps.connect({ name: "testapp", baseUrl: "https://x", authSecret: "s" });
 
     const events = new AppEventsRepo(h.clock);
-    const ev = events.store("testapp", { changed: true });
+    const ev = await events.store("testapp", { changed: true });
     await wakeOnAppEvent(h.agent, ev, "sid");
 
     expect(h.ownerChannel.sent.some((m) => m.includes("testapp"))).toBe(true);
@@ -103,7 +103,7 @@ describe("Phase 3: connected apps (the plug)", () => {
     const r = await h.dispatcher.dispatch("testapp.get_status", {}, ctx);
     expect(r.ok).toBe(false);
     expect(r.status).toBe("app_unreachable");
-    const receipt = h.receipts.all().find((x) => x.tool === "testapp.get_status");
+    const receipt = (await h.receipts.all()).find((x) => x.tool === "testapp.get_status");
     expect(receipt!.performed).toBe(false);
   });
 
@@ -125,7 +125,7 @@ describe("Phase 3: connected apps (the plug)", () => {
     });
     const { memorySave } = await import("../src/memory/memory-tools.js");
     await memorySave.run({ text: "Sid got 88 in Chemistry", kind: "durable", confidence: "inferred" }, ctx);
-    const f = h.facts.activeFacts()[0]!;
+    const f = (await h.facts.activeFacts())[0]!;
     expect(f.sourceType).toBe("app");
     expect(f.sourceRef).toBe("app:school:evt1");
   });

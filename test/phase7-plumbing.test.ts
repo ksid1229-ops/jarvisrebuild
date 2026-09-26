@@ -6,9 +6,9 @@ import { ArchiveService, archiveSearch } from "../src/plumbing/archive.js";
 import { buildVaultExport, authorizeVaultExport } from "../src/plumbing/vault.js";
 import { WatchdogPinger } from "../src/plumbing/watchdog.js";
 
-function seedFacts(h: ReturnType<typeof makeHarness>, n: number) {
+async function seedFacts(h: ReturnType<typeof makeHarness>, n: number): Promise<void> {
   for (let i = 0; i < n; i++) {
-    h.facts.save({
+    await h.facts.save({
       text: `fact number ${i}`,
       kind: "durable",
       confidence: "inferred",
@@ -22,7 +22,7 @@ function seedFacts(h: ReturnType<typeof makeHarness>, n: number) {
 describe("Phase 7: plumbing", () => {
   it("nightly backup exports every table AND every row (no silent truncation)", async () => {
     const h = makeHarness([]);
-    seedFacts(h, 100);
+    await seedFacts(h, 100);
     const { key, counts } = await h.backup.exportAll();
     expect(key).toContain("backups/");
     expect(counts.facts).toBe(100);
@@ -55,11 +55,11 @@ describe("Phase 7: plumbing", () => {
     expect(((res.data as any).results as any[]).length).toBe(1);
   });
 
-  it("heartbeat distinguishes alive from quiet", () => {
+  it("heartbeat distinguishes alive from quiet", async () => {
     const h = makeHarness([]);
-    h.heartbeat.record("cron");
-    expect(h.heartbeat.last("cron")).toBeTruthy();
-    expect(h.heartbeat.last("never-run")).toBeUndefined();
+    await h.heartbeat.record("cron");
+    expect(await h.heartbeat.last("cron")).toBeTruthy();
+    expect(await h.heartbeat.last("never-run")).toBeUndefined();
   });
 
   it("watchdog pings when configured and is honest (not fake) when not", async () => {
@@ -71,11 +71,11 @@ describe("Phase 7: plumbing", () => {
     expect((await on.ping()).ok).toBe(true);
   });
 
-  it("vault export processes EVERY note (the first build stopped at 64)", () => {
+  it("vault export processes EVERY note (the first build stopped at 64)", async () => {
     const h = makeHarness([]);
-    seedFacts(h, 100);
-    h.wakeups.schedule("2026-09-27T10:00:00.000Z", "a reminder");
-    const exported = buildVaultExport(h.facts.all(), h.wakeupsRepo.list());
+    await seedFacts(h, 100);
+    await h.wakeups.schedule("2026-09-27T10:00:00.000Z", "a reminder");
+    const exported = buildVaultExport(await h.facts.all(), await h.wakeupsRepo.list());
     expect(exported.count).toBe(101); // 100 facts + 1 wakeup, NOT capped at 64
     expect(exported.notes[0]!.markdown).toContain("---"); // frontmatter
   });

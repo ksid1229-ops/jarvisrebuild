@@ -7,7 +7,7 @@ describe("Phase 1: the nervous system", () => {
     const h = makeHarness([{ content: "Hey Sid." }]);
     const res = await h.agent.handle(ownerEvent("hello"));
     expect(res.reply).toBe("Hey Sid.");
-    const msgs = h.conversation.all();
+    const msgs = await h.conversation.all();
     expect(msgs.map((m) => `${m.role}:${m.content}`)).toEqual(["user:hello", "assistant:Hey Sid."]);
   });
 
@@ -36,7 +36,7 @@ describe("Phase 1: the nervous system", () => {
       { content: "done" },
     ]);
     await h.agent.handle(ownerEvent("ping"));
-    const r = h.receipts.all().find((x) => x.tool === "send_text");
+    const r = (await h.receipts.all()).find((x) => x.tool === "send_text");
     expect(r).toBeTruthy();
     expect(r!.trigger).toBe("text");
     expect(r!.performed).toBe(true);
@@ -46,10 +46,10 @@ describe("Phase 1: the nervous system", () => {
     const h = makeHarness([{ content: "" }]);
     const res = await h.agent.handle(ownerEvent("hi"));
     expect(res.reply).toBe("");
-    const empty = h.receipts.all().find((r) => r.status === "empty_reply");
+    const empty = (await h.receipts.all()).find((r) => r.status === "empty_reply");
     expect(empty).toBeTruthy();
     // An empty reply is not stored as an assistant message.
-    expect(h.conversation.all().some((m) => m.role === "assistant")).toBe(false);
+    expect((await h.conversation.all()).some((m) => m.role === "assistant")).toBe(false);
   });
 
   it("surfaces and logs a model error rather than swallowing it", async () => {
@@ -60,7 +60,7 @@ describe("Phase 1: the nervous system", () => {
     ]);
     const res = await h.agent.handle(ownerEvent("hi"));
     expect(res.error).toContain("deepseek exploded");
-    const err = h.receipts.all().find((r) => r.tool === "model" && r.status === "error");
+    const err = (await h.receipts.all()).find((r) => r.tool === "model" && r.status === "error");
     expect(err).toBeTruthy();
   });
 
@@ -71,7 +71,7 @@ describe("Phase 1: the nervous system", () => {
     ]);
     h.ownerChannel.failNext = true;
     await h.agent.handle(ownerEvent("ping"));
-    const r = h.receipts.all().find((x) => x.tool === "send_text");
+    const r = (await h.receipts.all()).find((x) => x.tool === "send_text");
     expect(r!.performed).toBe(false);
     expect(r!.status).toBe("send_failed");
   });

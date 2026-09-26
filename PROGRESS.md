@@ -2,8 +2,9 @@
 
 **All 7 phases built and tested** (Phases 1, 2, 3, 5, 6, 7 complete; Phase 4 confirmation/shadow/
 receipts core complete — that is the whole of Phase 4's code scope).
-**Connector buildout STARTED (Sid approved):** school collector protocol ported + tested
-(22 new tests). 81/81 green, tsc clean.
+**Connector buildout in progress (Sid approved):** school protocol ported (22 tests) +
+D1 persistence for ALL stores, wired into the production DO (8 persistence tests).
+89/89 green, tsc clean, school app untouched at 231/231.
 
 **Sid's locked answers (2026-09-26, via popup):**
 - spend_money = browser autofill: Jarvis drives the checkout, clicks his saved card ending
@@ -15,10 +16,11 @@ receipts core complete — that is the whole of Phase 4's code scope).
   Passwords/tokens stored as deploy secrets, redacted from logs, visible to Sid on request.
 - PC offline = QUEUE: record it, say it's queued, run it when the PC checks in.
 
-**Exact next step:** D1 persistence adapters for every repo + migration 0002 (school collector
-keys/nonces/evidence/requests). Then in order: school routes + pairing approval + school tools,
-school-app fix (issuedAt→ISO, base URL, pull client, 4 parser bugs), pull channel both sides,
-email in/out, Twilio REST + ConversationRelay WS loop, Vectorize index, PC agent app.
+**Exact next step:** school routes (pairing start/prove/status + observations) + pairing
+approval through Jarvis + the 4 school tools served from evidence. Then in order: school-app
+fix (issuedAt to ISO, base URL, pull client, 4 parser bugs), pull channel both sides, email
+in/out (Cloudflare in, Gmail API + MS Graph out), Twilio REST + ConversationRelay WS loop,
+Vectorize index, PC agent app.
 
 **Voice runtime note:** the `/voice` webhook (Twilio signature verified, returns ConversationRelay
 TwiML) and the caller-id/PIN/guest logic are built and unit-tested. The DO WebSocket loop that
@@ -94,6 +96,9 @@ npm test
 - `src/school/canonical.ts` — canonical JSON, byte-compatible with the school app (ported reference).
 - `src/school/signed-request.ts` — Ed25519 envelope verify over exact body bytes (ported reference).
 - `src/school/collector-protocol.ts` — parseSchoolBatch + verifyCollectorRequest, single-use nonces.
+- `src/persistence/d1.ts` — D1Db interface mirroring the real binding (prepare/bind/first/all/run).
+- Every `*-repo.ts` — now an async `*Store` interface + in-memory impl + `D1*` impl, same semantics.
+- `migrations/0002_school_surface.sql` — app_events, heartbeats (0001 missed them), school keys/nonces/evidence/requests.
 - `migrations/0001_init.sql` — D1 schema mirroring the repos.
 - `wrangler.toml` — Cloudflare config (D1/R2/Vectorize/AI/Queues/DO/cron).
 
@@ -127,6 +132,9 @@ npm test
   date + search across range incl call transcripts; archive_search tool; heartbeat alive-vs-quiet; watchdog
   honest not_connected vs a real ping; vault export processes EVERY note (101, not 64); vault token fail-closed.
 
+- `test/persistence.test.ts` (8): every D1 adapter against REAL SQLite running the REAL
+  migration files (facts chain/expiry, conversation rollup, receipts filters, pending guards,
+  settings, wakeups/guests/apps/events/heartbeats, school nonce SQL, schema CHECK refusal).
 - `test/school-protocol.test.ts` (22): canonical known-answer vectors; batch accept/reject
   (extra field, numeric/future/shifted timestamps, duplicate route, host-failure rules, JSON 403
   as evidence); full Ed25519 round-trip with real keys; nonce single-use; numeric-issuedAt
@@ -151,6 +159,7 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 - Vault token fail-open (no token => allow) → phase7 "token-gated and fails closed" went red.
 - Nonce insert disabled → school-protocol "refuses to reuse a nonce" went red.
 - Exact-field check disabled → school-protocol "rejects an extra field anywhere" went red.
+- D1 expiry comparison flipped (`>` to `<`) → persistence "facts expiry" went red.
 
 ## Decisions not in the brief (mine, flagged for Sid)
 
@@ -176,6 +185,12 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
    `apps/cloud-gateway/src/school/collector-protocol.ts` + `src/sync/signed-request.ts`
    (parseSchoolBatch, verifyCollectorRequest, nonce handling). Error strings kept identical.
    One simplification: no `principals` join — single-owner system, owner id comes from env.
+7. **All stores are async now (D1 is async-only).** The sync repos were the test shortcut;
+   every store is an async interface with an in-memory + a D1 impl. `isActive`/`isExpired` stay
+   sync (pure checks on objects). The DO uses D1 stores when `env.DB` is bound, in-memory in
+   local dev. D1 summary rows sort first like the in-memory splice; the `cron.ts` Date.now fixed.
+8. **Persistence tests run the real migrations** via `?raw` imports into sql.js (real SQLite).
+   The shim implements the same D1Db surface production passes the binding into.
 6. **School app `issuedAt` break (found 2026-09-26).** The app sends `issuedAt` as an epoch
    NUMBER; the proven receiver requires an ISO-8601 UTC STRING and rejects anything else
    before signature check. The app's fake-gateway test never validated the field, and live
@@ -226,7 +241,7 @@ Built by:
 - Reasoning / effort level (if known): UNKNOWN
 - Knowledge cutoff: UNKNOWN
 - Session date and time (UTC): 2026-09-26
-- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4) + connector buildout started (school protocol)
+- Phases completed this session: all 7 (Phases 1, 2, 3, 5, 6, 7, and the full confirmation/shadow/receipts scope of Phase 4) + connector buildout (school protocol, full D1 persistence)
 
 ---
 

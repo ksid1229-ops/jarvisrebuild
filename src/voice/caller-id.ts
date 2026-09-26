@@ -1,4 +1,4 @@
-import type { GuestsRepo } from "./guests-repo.js";
+import type { GuestsStore } from "./guests-repo.js";
 import { newCallSession, type CallSession } from "./call-session.js";
 
 /**
@@ -10,15 +10,15 @@ import { newCallSession, type CallSession } from "./call-session.js";
  * FAIL CLOSED: with no configured owner phone, a caller is never treated as the
  * owner.
  */
-export function identifyCaller(
+export async function identifyCaller(
   fromNumber: string,
   ownerPhoneE164: string | undefined,
-  guests: GuestsRepo,
-): CallSession {
+  guests: GuestsStore,
+): Promise<CallSession> {
   if (ownerPhoneE164 && fromNumber === ownerPhoneE164) {
     return newCallSession({ callerId: fromNumber, role: "owner" });
   }
-  const guest = guests.activeByPhone(fromNumber);
+  const guest = await guests.activeByPhone(fromNumber);
   if (guest) {
     return newCallSession({ callerId: fromNumber, role: "guest", access: guest.access });
   }

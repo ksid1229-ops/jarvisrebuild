@@ -1,5 +1,7 @@
 import type { Clock } from "../clock.js";
 import { newId } from "../ids.js";
+import type { D1Db, D1Row } from "../persistence/d1.js";
+import { str } from "../persistence/d1.js";
 import type { AgentCore, AgentResult, JarvisEvent } from "../jarvis/agent-core.js";
 
 export interface AppEvent {
@@ -10,11 +12,16 @@ export interface AppEvent {
 }
 
 /** Stores app events (senses). Each event wakes Jarvis with the app + raw payload. */
-export class AppEventsRepo {
+export interface AppEventsStore {
+  store(appName: string, payload: unknown): Promise<AppEvent>;
+  all(): Promise<AppEvent[]>;
+}
+
+export class AppEventsRepo implements AppEventsStore {
   private readonly events: AppEvent[] = [];
   constructor(private readonly clock: Clock) {}
 
-  store(appName: string, payload: unknown): AppEvent {
+  async store(appName: string, payload: unknown): Promise<AppEvent> {
     const ev: AppEvent = {
       id: newId("appevt"),
       appName,
@@ -24,8 +31,44 @@ export class AppEventsRepo {
     this.events.push(ev);
     return ev;
   }
-  all(): AppEvent[] {
+  async all(): Promise<AppEvent[]> {
     return [...this.events];
+  }
+}
+
+function rowToEvent(row: D1Row): AppEvent {
+  return {
+    id: str(row.id, "app_events.id"),
+    appName: str(row.app_name, "app_events.app_name"),
+    payloadJson: str(row.payload_json, "app_events.payload_json"),
+    receivedAt: str(row.received_at, "app_events.received_at"),
+  };
+}
+
+/** D1-backed app events. Same interface, real persistence. */
+export class D1AppEventsRepo implements AppEventsStore {
+  constructor(
+    private readonly db: D1Db,
+    private readonly clock: Clock,
+  ) {}
+
+  async store(appName: string, payload: unknown): Promise<AppEvent> {
+    const ev: AppEvent = {
+      id: newId("appevt"),
+      appName,
+      payloadJson: JSON.stringify(payload),
+      receivedAt: this.clock.nowIso(),
+    };
+    await this.db
+      .prepare(`INSERT INTO app_events (id, app_name, payload_json, received_at) VALUES (?, ?, ?, ?)`)
+      .bind(ev.id, ev.appName, ev.payloadJson, ev.receivedAt)
+      .run();
+    return ev;
+  }
+
+  async all(): Promise<AppEvent[]> {
+    const res = await this.db.prepare(`SELECT * FROM app_events ORDER BY rowid ASC`).all<D1Row>();
+    return res.results.map(rowToEvent);
   }
 }
 

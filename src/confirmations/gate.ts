@@ -41,7 +41,7 @@ export class ToolDispatcher {
     const tool = this.registry.get(name);
     if (!tool) {
       const result: ToolResult = { ok: false, status: "refused", message: `unknown tool: ${name}` };
-      ctx.receipts.log({ tool: name, input: args, result, trigger: ctx.trigger, performed: false, status: "refused" });
+      await ctx.receipts.log({ tool: name, input: args, result, trigger: ctx.trigger, performed: false, status: "refused" });
       return result;
     }
 
@@ -56,7 +56,7 @@ export class ToolDispatcher {
     } catch (e) {
       result = { ok: false, status: "error", message: (e as Error).message };
     }
-    ctx.receipts.log({
+    await ctx.receipts.log({
       tool: name,
       input: args,
       result,
@@ -81,7 +81,7 @@ export class ToolDispatcher {
         message: `Already waiting on Sid to confirm this. pending_id=${existing.id}`,
         data: { pending_id: existing.id },
       };
-      ctx.receipts.log({ tool: tool.name, input: args, result, trigger: ctx.trigger, performed: false, status: "confirmation_requested" });
+      await ctx.receipts.log({ tool: tool.name, input: args, result, trigger: ctx.trigger, performed: false, status: "confirmation_requested" });
       return result;
     }
 
@@ -109,7 +109,7 @@ export class ToolDispatcher {
         : `Created pending action but the confirmation send FAILED (${send.status}). pending_id=${pending.id}`,
       data: { pending_id: pending.id, sendStatus: send.status },
     };
-    ctx.receipts.log({
+    await ctx.receipts.log({
       tool: tool.name,
       input: args,
       result,
@@ -128,17 +128,17 @@ export class ToolDispatcher {
   async executeConfirmed(pendingId: string, ctx: ToolContext): Promise<ToolResult> {
     let action;
     try {
-      action = ctx.pending.confirm(pendingId, ctx.ownerId, ctx.eventId);
+      action = await ctx.pending.confirm(pendingId, ctx.ownerId, ctx.eventId);
     } catch (e) {
       const result: ToolResult = { ok: false, status: "refused", message: (e as Error).message };
-      ctx.receipts.log({ tool: "confirm_action", input: { pendingId }, result, trigger: ctx.trigger, performed: false, status: "refused" });
+      await ctx.receipts.log({ tool: "confirm_action", input: { pendingId }, result, trigger: ctx.trigger, performed: false, status: "refused" });
       return result;
     }
 
     const tool = this.registry.get(action.tool);
     if (!tool) {
       const result: ToolResult = { ok: false, status: "error", message: `pending action names unknown tool ${action.tool}` };
-      ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "error" });
+      await ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "error" });
       return result;
     }
 
@@ -150,22 +150,22 @@ export class ToolDispatcher {
         status: "pin_required",
         message: "This action needs Sid's 4-digit PIN on the call. Ask him to say or key it, then confirm again.",
       };
-      ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "pin_required" });
+      await ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "pin_required" });
       return result;
     }
 
     const args = JSON.parse(action.argsJson) as Record<string, unknown>;
 
     // Shadow mode: log what would have happened, do not execute.
-    if (ctx.settings.isFeatureShadow(action.tool)) {
+    if (await ctx.settings.isFeatureShadow(action.tool)) {
       const result: ToolResult = {
         ok: true,
         status: "shadow",
         message: `Shadow mode: would have done — ${action.summary}. Nothing was executed.`,
         data: { wouldHave: action.summary },
       };
-      ctx.pending.markExecuted(action.id);
-      ctx.receipts.log({ tool: action.tool, input: args, result, trigger: ctx.trigger, performed: false, status: "shadow" });
+      await ctx.pending.markExecuted(action.id);
+      await ctx.receipts.log({ tool: action.tool, input: args, result, trigger: ctx.trigger, performed: false, status: "shadow" });
       return result;
     }
 
@@ -175,8 +175,8 @@ export class ToolDispatcher {
     } catch (e) {
       result = { ok: false, status: "error", message: (e as Error).message };
     }
-    ctx.pending.markExecuted(action.id);
-    ctx.receipts.log({
+    await ctx.pending.markExecuted(action.id);
+    await ctx.receipts.log({
       tool: action.tool,
       input: args,
       result,

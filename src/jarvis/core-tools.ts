@@ -42,7 +42,7 @@ export const receiptsQuery: Tool = {
     },
   },
   async run(args, ctx): Promise<ToolResult> {
-    const rows = ctx.receipts.query({
+    const rows = await ctx.receipts.query({
       fromIso: typeof args.from === "string" ? args.from : undefined,
       toIso: typeof args.to === "string" ? args.to : undefined,
       tool: typeof args.tool === "string" ? args.tool : undefined,
@@ -78,7 +78,7 @@ export const settingsUpdate: Tool = {
     const key = String(args.key ?? "");
     const value = String(args.value ?? "");
     if (key === "") return { ok: false, status: "refused", message: "key is required." };
-    ctx.settings.set(key, value);
+    await ctx.settings.set(key, value);
     return { ok: true, status: "ok", message: `set ${key}=${value}` };
   },
 };
@@ -107,7 +107,7 @@ export function makeConfirmTools(execute: (pendingId: string, ctx: ToolContext) 
     parameters: { type: "object", properties: { pending_id: { type: "string" } }, required: ["pending_id"] },
     async run(args, ctx): Promise<ToolResult> {
       try {
-        const a = ctx.pending.cancel(String(args.pending_id), ctx.ownerId);
+        const a = await ctx.pending.cancel(String(args.pending_id), ctx.ownerId);
         return { ok: true, status: "ok", message: `cancelled ${a.id}` };
       } catch (e) {
         return { ok: false, status: "refused", message: (e as Error).message };

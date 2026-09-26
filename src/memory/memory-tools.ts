@@ -83,7 +83,7 @@ export const memorySave: Tool = {
       }
     }
 
-    const fact = ctx.facts.save({
+    const fact = await ctx.facts.save({
       text,
       kind,
       confidence,
@@ -117,7 +117,7 @@ export const memoryCorrect: Tool = {
     required: ["fact_id", "new_text", "confidence", "kind", "reason"],
   },
   async run(args, ctx): Promise<ToolResult> {
-    const fact = ctx.facts.get(String(args.fact_id));
+    const fact = await ctx.facts.get(String(args.fact_id));
     if (!fact) return { ok: false, status: "refused", message: `fact ${args.fact_id} does not exist.` };
     const kind = args.kind as FactKind;
     if (!KINDS.includes(kind)) return badEnum("kind", args.kind, KINDS);
@@ -130,7 +130,7 @@ export const memoryCorrect: Tool = {
       }
       expiresAt = new Date(args.expires_at).toISOString();
     }
-    const next = ctx.facts.correct(fact.id, String(args.new_text), confidence, kind, expiresAt);
+    const next = await ctx.facts.correct(fact.id, String(args.new_text), confidence, kind, expiresAt);
     await ctx.vectors.remove(fact.id);
     await indexFact(ctx, next.id, next.text);
     return { ok: true, status: "ok", message: `Corrected into ${next.id}`, data: { id: next.id } };
@@ -148,7 +148,7 @@ function simpleFactTool(
     parameters: { type: "object", properties: { fact_id: { type: "string" } }, required: ["fact_id"] },
     async run(args, ctx): Promise<ToolResult> {
       const id = String(args.fact_id);
-      if (!ctx.facts.get(id)) return { ok: false, status: "refused", message: `fact ${id} does not exist.` };
+      if (!(await ctx.facts.get(id))) return { ok: false, status: "refused", message: `fact ${id} does not exist.` };
       return op(ctx, id);
     },
   };
@@ -158,7 +158,7 @@ export const memoryForget = simpleFactTool(
   "memory_forget",
   "Hide a fact from recall (reversible with memory_restore). Use when Sid asks to forget something.",
   async (ctx, id) => {
-    ctx.facts.forget(id);
+    await ctx.facts.forget(id);
     await ctx.vectors.remove(id);
     return { ok: true, status: "ok", message: `Hid fact ${id}` };
   },
@@ -168,7 +168,7 @@ export const memoryRestore = simpleFactTool(
   "memory_restore",
   "Un-hide a previously forgotten fact.",
   async (ctx, id) => {
-    const f = ctx.facts.restore(id);
+    const f = await ctx.facts.restore(id);
     const vec = await ctx.embeddings.embed(f.text);
     await ctx.vectors.upsert(id, vec);
     return { ok: true, status: "ok", message: `Restored fact ${id}` };
@@ -178,8 +178,8 @@ export const memoryRestore = simpleFactTool(
 export const memoryConfirm = simpleFactTool(
   "memory_confirm",
   "Mark an inferred fact as confirmed, once Sid has confirmed it.",
-  (ctx, id) => {
-    ctx.facts.confirm(id);
+  async (ctx, id) => {
+    await ctx.facts.confirm(id);
     return { ok: true, status: "ok", message: `Confirmed fact ${id}` };
   },
 );
@@ -188,8 +188,8 @@ export const memoryPin = simpleFactTool(
   "memory_pin",
   "Add a fact to the core profile (pinned facts are injected into your context every turn). " +
     "Pin only the handful of facts that define who Sid is.",
-  (ctx, id) => {
-    ctx.facts.pin(id);
+  async (ctx, id) => {
+    await ctx.facts.pin(id);
     return { ok: true, status: "ok", message: `Pinned fact ${id}` };
   },
 );
@@ -197,8 +197,8 @@ export const memoryPin = simpleFactTool(
 export const memoryUnpin = simpleFactTool(
   "memory_unpin",
   "Remove a fact from the core profile.",
-  (ctx, id) => {
-    ctx.facts.unpin(id);
+  async (ctx, id) => {
+    await ctx.facts.unpin(id);
     return { ok: true, status: "ok", message: `Unpinned fact ${id}` };
   },
 );
@@ -209,8 +209,8 @@ export const memoryExplain: Tool = {
   parameters: { type: "object", properties: { fact_id: { type: "string" } }, required: ["fact_id"] },
   async run(args, ctx): Promise<ToolResult> {
     const id = String(args.fact_id);
-    if (!ctx.facts.get(id)) return { ok: false, status: "refused", message: `fact ${id} does not exist.` };
-    const chain = ctx.facts.explain(id);
+    if (!(await ctx.facts.get(id))) return { ok: false, status: "refused", message: `fact ${id} does not exist.` };
+    const chain = await ctx.facts.explain(id);
     return {
       ok: true,
       status: "ok",
@@ -254,7 +254,7 @@ export const memorySearch: Tool = {
     const results: unknown[] = [];
     let dropped = 0;
     for (const h of hits) {
-      const f = ctx.facts.get(h.id);
+      const f = await ctx.facts.get(h.id);
       if (!f || !ctx.facts.isActive(f)) {
         dropped += 1;
         continue;
@@ -281,7 +281,7 @@ export const historySearch: Tool = {
     const query = String(args.query ?? "");
     if (query.trim() === "") return { ok: false, status: "refused", message: "query is required." };
     const HARD_CAP = 50;
-    const all = ctx.conversation.literalSearch(query);
+    const all = await ctx.conversation.literalSearch(query);
     const results = all.slice(0, HARD_CAP);
     return {
       ok: true,

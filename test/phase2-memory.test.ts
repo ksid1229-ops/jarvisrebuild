@@ -20,7 +20,7 @@ describe("Phase 2: memory", () => {
       { content: "Noted." },
     ]);
     await h.agent.handle(ownerEvent("honestly i hate mornings so much"));
-    const facts = h.facts.activeFacts();
+    const facts = await h.facts.activeFacts();
     expect(facts).toHaveLength(1);
     expect(facts[0]!.text).toBe("Sid hates mornings");
     expect(facts[0]!.confidence).toBe("stated");
@@ -42,8 +42,8 @@ describe("Phase 2: memory", () => {
       { content: "ok" },
     ]);
     await h.agent.handle(ownerEvent("i hate mornings"));
-    expect(h.facts.all()).toHaveLength(0);
-    const rejected = h.receipts.all().find((r) => r.tool === "memory_save" && r.status === "refused");
+    expect(await h.facts.all()).toHaveLength(0);
+    const rejected = (await h.receipts.all()).find((r) => r.tool === "memory_save" && r.status === "refused");
     expect(rejected).toBeTruthy();
     expect(rejected!.resultJson).toContain("Provenance check failed");
   });
@@ -79,7 +79,7 @@ describe("Phase 2: memory", () => {
 
     // Hide the morning fact; it must vanish from search.
     const morningId = results[0].id;
-    h.facts.forget(morningId);
+    await h.facts.forget(morningId);
     await h.vectors.remove(morningId);
     const after = await memorySearch.run({ query: "mornings", limit: 5 }, ctx);
     const afterResults = (after.data as any).results as any[];
@@ -94,16 +94,16 @@ describe("Phase 2: memory", () => {
       { text: "Sid is away this weekend", kind: "temporary", confidence: "inferred", expires_at: expiry },
       ctx,
     );
-    expect(h.facts.activeFacts()).toHaveLength(1);
+    expect(await h.facts.activeFacts()).toHaveLength(1);
     h.clock.advance(2000);
-    expect(h.facts.activeFacts()).toHaveLength(0);
+    expect(await h.facts.activeFacts()).toHaveLength(0);
     const after = await memorySearch.run({ query: "away weekend" }, ctx);
     expect(((after.data as any).results as any[])).toHaveLength(0);
   });
 
-  it("corrections create a new version linked to the old (never overwrite)", () => {
+  it("corrections create a new version linked to the old (never overwrite)", async () => {
     const h = makeHarness([]);
-    const f1 = h.facts.save({
+    const f1 = await h.facts.save({
       text: "Sid has an iPhone 15",
       kind: "durable",
       confidence: "stated",
@@ -111,17 +111,17 @@ describe("Phase 2: memory", () => {
       sourceRef: "x",
       expiresAt: null,
     });
-    const f2 = h.facts.correct(f1.id, "Sid has an iPhone 16", "stated", "durable", null);
-    expect(h.facts.get(f1.id)!.supersededBy).toBe(f2.id);
-    const chain = h.facts.explain(f2.id);
+    const f2 = await h.facts.correct(f1.id, "Sid has an iPhone 16", "stated", "durable", null);
+    expect((await h.facts.get(f1.id))!.supersededBy).toBe(f2.id);
+    const chain = await h.facts.explain(f2.id);
     expect(chain.map((f) => f.text)).toEqual(["Sid has an iPhone 15", "Sid has an iPhone 16"]);
     // Superseded facts are not active.
-    expect(h.facts.activeFacts().map((f) => f.text)).toEqual(["Sid has an iPhone 16"]);
+    expect((await h.facts.activeFacts()).map((f) => f.text)).toEqual(["Sid has an iPhone 16"]);
   });
 
   it("pinned facts (core profile) are injected into the system prompt every turn", async () => {
     const h = makeHarness([{ content: "hi" }]);
-    const f = h.facts.save({
+    const f = await h.facts.save({
       text: "Sid is a student in Ontario",
       kind: "durable",
       confidence: "confirmed",

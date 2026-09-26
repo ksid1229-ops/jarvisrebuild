@@ -82,7 +82,7 @@ export const guestCreate: Tool = {
     const pin = String(args.pin ?? "");
     if (!/^\d{4}$/.test(pin)) return { ok: false, status: "refused", message: "pin must be 4 digits." };
     const pinHash = await hashPin(pin, ctx.pinPepper ?? "");
-    const g = ctx.guests.create({
+    const g = await ctx.guests.create({
       name: String(args.name),
       phone: String(args.phone),
       access: String(args.access),
@@ -99,7 +99,7 @@ export const guestRevoke: Tool = {
   parameters: { type: "object", properties: { guest_id: { type: "string" } }, required: ["guest_id"] },
   async run(args, ctx): Promise<ToolResult> {
     if (!ctx.guests) return { ok: false, status: "not_connected", message: "Guest registry not wired." };
-    const ok = ctx.guests.revoke(String(args.guest_id));
+    const ok = await ctx.guests.revoke(String(args.guest_id));
     return ok
       ? { ok: true, status: "ok", message: `Revoked ${args.guest_id}` }
       : { ok: false, status: "refused", message: `No such guest ${args.guest_id}` };

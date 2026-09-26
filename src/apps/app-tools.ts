@@ -57,7 +57,7 @@ export const disconnectApp: Tool = {
   parameters: { type: "object", properties: { app_id: { type: "string" } }, required: ["app_id"] },
   async run(args, ctx): Promise<ToolResult> {
     if (!ctx.apps) return noManager();
-    const ok = ctx.apps.disconnect(String(args.app_id));
+    const ok = await ctx.apps.disconnect(String(args.app_id));
     return ok
       ? { ok: true, status: "ok", message: `Disconnected ${args.app_id}` }
       : { ok: false, status: "refused", message: `No such app ${args.app_id}` };
@@ -70,10 +70,11 @@ export const listConnectedApps: Tool = {
   parameters: { type: "object", properties: {} },
   async run(_args, ctx): Promise<ToolResult> {
     if (!ctx.apps) return noManager();
+    const list = await ctx.apps.list();
     return {
       ok: true,
       status: "ok",
-      data: ctx.apps.list().map((a) => ({ id: a.id, name: a.name, baseUrl: a.baseUrl, enabled: a.enabled, addedAt: a.addedAt })),
+      data: list.map((a) => ({ id: a.id, name: a.name, baseUrl: a.baseUrl, enabled: a.enabled, addedAt: a.addedAt })),
     };
   },
 };

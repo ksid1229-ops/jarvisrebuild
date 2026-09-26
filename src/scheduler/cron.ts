@@ -1,23 +1,25 @@
 import type { AgentCore, AgentResult, JarvisEvent } from "../jarvis/agent-core.js";
 import type { WakeupScheduler } from "./wakeup-scheduler.js";
-import type { HeartbeatRepo } from "../plumbing/heartbeat.js";
+import type { HeartbeatStore } from "../plumbing/heartbeat.js";
 import type { WatchdogPinger } from "../plumbing/watchdog.js";
 import type { BackupService } from "../plumbing/backup.js";
 import { newId } from "../ids.js";
 
 /** Build a wake-up event for Jarvis. The model decides what to DO with it. */
 export function wakeupEvent(reason: string): JarvisEvent {
+  // No Date.now(): the event id is already unique; the clock stays injected.
+  const eventId = newId("evt");
   return {
     channel: "text",
     trigger: "wakeup",
-    eventId: newId("evt"),
+    eventId,
     text: reason,
     provenance: {
       channel: "text",
       isOwner: true,
       isForwarded: false,
       isPrivate: true,
-      sourceRef: `wakeup:${Date.now()}`,
+      sourceRef: `wakeup:${eventId}`,
       sourceType: "conversation",
     },
   };
@@ -30,7 +32,7 @@ export interface CronDeps {
   cronExpr: string;
   agent: AgentCore;
   scheduler: WakeupScheduler;
-  heartbeat: HeartbeatRepo;
+  heartbeat: HeartbeatStore;
   watchdog: WatchdogPinger;
   backup: BackupService;
 }
@@ -51,7 +53,7 @@ export interface CronResult {
  */
 export async function handleCron(deps: CronDeps): Promise<CronResult> {
   const ran: string[] = [];
-  deps.heartbeat.record(`cron:${deps.cronExpr}`);
+  await deps.heartbeat.record(`cron:${deps.cronExpr}`);
   const result: CronResult = { ran, wakeupsFired: 0 };
 
   if (deps.cronExpr === HOURLY_CRON) {

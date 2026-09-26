@@ -1,10 +1,10 @@
 import type { Clock } from "../clock.js";
-import type { ConversationRepo } from "../conversation/conversation-repo.js";
+import type { ConversationStore } from "../conversation/conversation-repo.js";
 import type { EmbeddingProvider, VectorIndex } from "../memory/embeddings.js";
-import type { FactsRepo } from "../memory/facts-repo.js";
-import type { PendingActionsRepo } from "../confirmations/pending-actions.js";
-import type { ReceiptsRepo } from "../receipts/receipts-repo.js";
-import type { SettingsRepo } from "../settings/settings-repo.js";
+import type { FactsStore } from "../memory/facts-repo.js";
+import type { PendingStore } from "../confirmations/pending-actions.js";
+import type { ReceiptsStore } from "../receipts/receipts-repo.js";
+import type { SettingsStore } from "../settings/settings-repo.js";
 import type { ToolSchema } from "../model/types.js";
 import type { Provenance, Trigger } from "../types.js";
 
@@ -35,11 +35,11 @@ export interface ToolContext {
   /** The current owner message text, for provenance quote verification. */
   ownerMessageText: string;
 
-  facts: FactsRepo;
-  conversation: ConversationRepo;
-  receipts: ReceiptsRepo;
-  pending: PendingActionsRepo;
-  settings: SettingsRepo;
+  facts: FactsStore;
+  conversation: ConversationStore;
+  receipts: ReceiptsStore;
+  pending: PendingStore;
+  settings: SettingsStore;
   embeddings: EmbeddingProvider;
   vectors: VectorIndex;
   ownerChannel: OwnerChannel;
@@ -56,7 +56,7 @@ export interface ToolContext {
   /** Verifies the owner's 4-digit PIN (hash compare). Fail-closed when unconfigured. */
   ownerPinVerifier?: import("../voice/pin.js").OwnerPinVerifier;
   /** Guest registry, for guest_create / guest_revoke. */
-  guests?: import("../voice/guests-repo.js").GuestsRepo;
+  guests?: import("../voice/guests-repo.js").GuestsStore;
   /** Pepper for hashing guest PINs at rest. */
   pinPepper?: string;
 

@@ -24,7 +24,7 @@ export const scheduleWakeup: Tool = {
     const reason = String(args.reason ?? "");
     if (reason.trim() === "") return { ok: false, status: "refused", message: "reason is required." };
     try {
-      const w = ctx.wakeups.schedule(fireAt, reason);
+      const w = await ctx.wakeups.schedule(fireAt, reason);
       return { ok: true, status: "ok", message: `Scheduled ${w.id} for ${w.fireAt}`, data: { id: w.id, fireAt: w.fireAt } };
     } catch (e) {
       return { ok: false, status: "refused", message: (e as Error).message };
@@ -38,7 +38,8 @@ export const listWakeups: Tool = {
   parameters: { type: "object", properties: {} },
   async run(_args, ctx): Promise<ToolResult> {
     if (!ctx.wakeups) return { ok: false, status: "not_connected", message: "Scheduler not wired." };
-    return { ok: true, status: "ok", data: ctx.wakeups.list().map((w) => ({ id: w.id, fireAt: w.fireAt, reason: w.reason })) };
+    const list = await ctx.wakeups.list();
+    return { ok: true, status: "ok", data: list.map((w) => ({ id: w.id, fireAt: w.fireAt, reason: w.reason })) };
   },
 };
 
@@ -48,7 +49,7 @@ export const cancelWakeup: Tool = {
   parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   async run(args, ctx): Promise<ToolResult> {
     if (!ctx.wakeups) return { ok: false, status: "not_connected", message: "Scheduler not wired." };
-    const ok = ctx.wakeups.cancel(String(args.id));
+    const ok = await ctx.wakeups.cancel(String(args.id));
     return ok
       ? { ok: true, status: "ok", message: `Cancelled ${args.id}` }
       : { ok: false, status: "refused", message: `No such wake-up ${args.id}` };

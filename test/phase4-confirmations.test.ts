@@ -18,10 +18,10 @@ describe("Phase 4: the five confirmed actions", () => {
     // Sid received a confirmation prompt.
     expect(h.ownerChannel.sent.some((m) => m.startsWith("Just to be sure"))).toBe(true);
     // The action did NOT run: no not_connected receipt from send_email execution.
-    const executed = h.receipts.all().find((r) => r.tool === "send_email" && r.status === "not_connected");
+    const executed = (await h.receipts.all()).find((r) => r.tool === "send_email" && r.status === "not_connected");
     expect(executed).toBeUndefined();
     // A confirmation_requested receipt exists.
-    expect(h.receipts.all().some((r) => r.tool === "send_email" && r.status === "confirmation_requested")).toBe(true);
+    expect((await h.receipts.all()).some((r) => r.tool === "send_email" && r.status === "confirmation_requested")).toBe(true);
   });
 
   it("refuses to self-confirm within the same turn that requested it", async () => {
@@ -50,7 +50,7 @@ describe("Phase 4: the five confirmed actions", () => {
     // Not connected: honest, not faked success.
     expect(res.status).toBe("not_connected");
     expect(res.ok).toBe(false);
-    const receipt = h.receipts.all().find((r) => r.tool === "send_email" && r.status === "not_connected");
+    const receipt = (await h.receipts.all()).find((r) => r.tool === "send_email" && r.status === "not_connected");
     expect(receipt).toBeTruthy();
     expect(receipt!.performed).toBe(false);
   });
@@ -68,7 +68,7 @@ describe("Phase 4: the five confirmed actions", () => {
 
   it("shadow mode logs what it WOULD do and does not execute", async () => {
     const h = makeHarness([{ content: "x" }]);
-    h.settings.set("shadow", "on");
+    await h.settings.set("shadow", "on");
     const ctx1 = h.ctxFor(ownerEvent("spend", "e1"));
     await h.dispatcher.dispatch("spend_money", { amount: 5, currency: "CAD", description: "coffee" }, ctx1);
     const pendingId = [...(h.pending as any).actions.keys()][0] as string;
@@ -77,7 +77,7 @@ describe("Phase 4: the five confirmed actions", () => {
     expect(res.status).toBe("shadow");
     expect(res.message).toContain("would have done");
     // The real action never ran (no not_connected receipt).
-    expect(h.receipts.all().some((r) => r.tool === "spend_money" && r.status === "not_connected")).toBe(false);
+    expect((await h.receipts.all()).some((r) => r.tool === "spend_money" && r.status === "not_connected")).toBe(false);
   });
 
   it("expires a confirmation after the TTL", async () => {

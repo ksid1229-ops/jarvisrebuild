@@ -1,7 +1,7 @@
 import type { ToolDispatcher } from "../confirmations/gate.js";
 import type { Tool, ToolResult } from "../jarvis/tool-types.js";
 import type { AppConnector } from "./connector.js";
-import type { ConnectedAppsRepo } from "./app-registry.js";
+import type { ConnectedAppsStore } from "./app-registry.js";
 import type { ConnectedApp } from "../types.js";
 
 /** Namespaced tool name so two apps can publish the same tool name safely. */
@@ -21,7 +21,7 @@ export class AppManager {
   private readonly toolNamesByApp = new Map<string, string[]>();
 
   constructor(
-    private readonly repo: ConnectedAppsRepo,
+    private readonly repo: ConnectedAppsStore,
     private readonly dispatcher: ToolDispatcher,
     /** Injected so tests can supply an in-process fake connector. */
     private readonly makeConnector: (app: ConnectedApp) => AppConnector,
@@ -29,7 +29,7 @@ export class AppManager {
 
   /** Register the app and load its tools. Called after Sid confirms connect_app. */
   async connect(input: { name: string; baseUrl: string; authSecret: string }): Promise<{ app: ConnectedApp; toolNames: string[] }> {
-    const app = this.repo.add(input);
+    const app = await this.repo.add(input);
     const connector = this.makeConnector(app);
     this.connectors.set(app.id, connector);
     const toolNames = await this.loadTools(app, connector);
@@ -58,7 +58,7 @@ export class AppManager {
     return names;
   }
 
-  disconnect(appId: string): boolean {
+  async disconnect(appId: string): Promise<boolean> {
     const names = this.toolNamesByApp.get(appId) ?? [];
     for (const n of names) this.dispatcher.unregister(n);
     this.toolNamesByApp.delete(appId);
@@ -70,7 +70,7 @@ export class AppManager {
     return this.connectors.get(appId);
   }
 
-  list(): ConnectedApp[] {
+  async list(): Promise<ConnectedApp[]> {
     return this.repo.list();
   }
 }

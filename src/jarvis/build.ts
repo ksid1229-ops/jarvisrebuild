@@ -1,32 +1,32 @@
 import type { Clock } from "../clock.js";
-import { ConversationRepo } from "../conversation/conversation-repo.js";
-import { PendingActionsRepo } from "../confirmations/pending-actions.js";
+import { ConversationRepo, type ConversationStore } from "../conversation/conversation-repo.js";
+import { PendingActionsRepo, type PendingStore } from "../confirmations/pending-actions.js";
 import { ToolDispatcher } from "../confirmations/gate.js";
 import { actionTools } from "../confirmations/action-tools.js";
 import type { EmbeddingProvider, VectorIndex } from "../memory/embeddings.js";
-import { FactsRepo } from "../memory/facts-repo.js";
+import { FactsRepo, type FactsStore } from "../memory/facts-repo.js";
 import { memoryTools } from "../memory/memory-tools.js";
-import { ReceiptsRepo } from "../receipts/receipts-repo.js";
-import { SettingsRepo } from "../settings/settings-repo.js";
+import { ReceiptsRepo, type ReceiptsStore } from "../receipts/receipts-repo.js";
+import { SettingsRepo, type SettingsStore } from "../settings/settings-repo.js";
 import type { Model } from "../model/types.js";
 import { AgentCore } from "./agent-core.js";
 import { makeConfirmTools, receiptsQuery, sendText, settingsUpdate } from "./core-tools.js";
 import type { OwnerChannel } from "./tool-types.js";
-import { ConnectedAppsRepo } from "../apps/app-registry.js";
+import { ConnectedAppsRepo, type ConnectedAppsStore } from "../apps/app-registry.js";
 import { AppManager } from "../apps/app-manager.js";
 import { appTools } from "../apps/app-tools.js";
 import { HttpAppConnector, type AppConnector } from "../apps/connector.js";
 import type { ConnectedApp } from "../types.js";
 import { voiceTools } from "../voice/voice-tools.js";
-import { GuestsRepo } from "../voice/guests-repo.js";
+import { GuestsRepo, type GuestsStore } from "../voice/guests-repo.js";
 import { makeOwnerPinVerifier, type OwnerPinVerifier } from "../voice/pin.js";
-import { WakeupsRepo } from "../scheduler/wakeups-repo.js";
+import { WakeupsRepo, type WakeupsStore } from "../scheduler/wakeups-repo.js";
 import { WakeupScheduler, type SetAlarm } from "../scheduler/wakeup-scheduler.js";
 import { wakeupTools } from "../scheduler/wakeup-tools.js";
 import { InMemoryBucket, type Bucket } from "../plumbing/bucket.js";
 import { ArchiveService, archiveSearch } from "../plumbing/archive.js";
 import { BackupService } from "../plumbing/backup.js";
-import { HeartbeatRepo } from "../plumbing/heartbeat.js";
+import { HeartbeatRepo, type HeartbeatStore } from "../plumbing/heartbeat.js";
 import { WatchdogPinger } from "../plumbing/watchdog.js";
 
 export interface BuildInput {
@@ -48,36 +48,51 @@ export interface BuildInput {
   setAlarm?: SetAlarm;
   /** External watchdog ping URL (Healthchecks.io). Missing => not_connected. */
   watchdogUrl?: string;
+  /**
+   * Storage overrides. Production passes D1-backed stores here (see the DO's
+   * ensureBuilt); tests and local runs default to the in-memory stores.
+   */
+  stores?: {
+    facts?: FactsStore;
+    conversation?: ConversationStore;
+    receipts?: ReceiptsStore;
+    pending?: PendingStore;
+    settings?: SettingsStore;
+    appsRepo?: ConnectedAppsStore;
+    guests?: GuestsStore;
+    wakeupsRepo?: WakeupsStore;
+    heartbeat?: HeartbeatStore;
+  };
 }
 
 export interface BuiltJarvis {
   agent: AgentCore;
   dispatcher: ToolDispatcher;
-  facts: FactsRepo;
-  conversation: ConversationRepo;
-  receipts: ReceiptsRepo;
-  pending: PendingActionsRepo;
-  settings: SettingsRepo;
+  facts: FactsStore;
+  conversation: ConversationStore;
+  receipts: ReceiptsStore;
+  pending: PendingStore;
+  settings: SettingsStore;
   apps: AppManager;
-  appsRepo: ConnectedAppsRepo;
-  guests: GuestsRepo;
+  appsRepo: ConnectedAppsStore;
+  guests: GuestsStore;
   ownerPinVerifier: OwnerPinVerifier;
   wakeups: WakeupScheduler;
-  wakeupsRepo: WakeupsRepo;
+  wakeupsRepo: WakeupsStore;
   archive: ArchiveService;
   backup: BackupService;
-  heartbeat: HeartbeatRepo;
+  heartbeat: HeartbeatStore;
   watchdog: WatchdogPinger;
   bucket: Bucket;
 }
 
 /** Wire the whole brain together. Used by the DO, local runner and tests. */
 export function buildJarvis(input: BuildInput): BuiltJarvis {
-  const facts = new FactsRepo(input.clock);
-  const conversation = new ConversationRepo(input.clock);
-  const receipts = new ReceiptsRepo(input.clock);
-  const pending = new PendingActionsRepo(input.clock);
-  const settings = new SettingsRepo();
+  const facts = input.stores?.facts ?? new FactsRepo(input.clock);
+  const conversation = input.stores?.conversation ?? new ConversationRepo(input.clock);
+  const receipts = input.stores?.receipts ?? new ReceiptsRepo(input.clock);
+  const pending = input.stores?.pending ?? new PendingActionsRepo(input.clock);
+  const settings = input.stores?.settings ?? new SettingsRepo();
 
   const dispatcher = new ToolDispatcher([
     ...memoryTools,
@@ -95,28 +110,28 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
   const confirmTools = makeConfirmTools((pendingId, ctx) => dispatcher.executeConfirmed(pendingId, ctx));
   for (const t of confirmTools) dispatcher.register(t);
 
-  const appsRepo = new ConnectedAppsRepo(input.clock);
+  const appsRepo = input.stores?.appsRepo ?? new ConnectedAppsRepo(input.clock);
   const makeConnector =
     input.makeConnector ?? ((app: ConnectedApp) => new HttpAppConnector(app.baseUrl, app.authSecret));
   const apps = new AppManager(appsRepo, dispatcher, makeConnector);
 
-  const guests = new GuestsRepo(input.clock);
+  const guests = input.stores?.guests ?? new GuestsRepo(input.clock);
   const ownerPinVerifier = makeOwnerPinVerifier(input.ownerPin, input.pinPepper);
 
-  const wakeupsRepo = new WakeupsRepo(input.clock);
+  const wakeupsRepo = input.stores?.wakeupsRepo ?? new WakeupsRepo(input.clock);
   const wakeups = new WakeupScheduler(wakeupsRepo, input.clock, input.setAlarm);
   const bucket = input.bucket ?? new InMemoryBucket();
   const archive = new ArchiveService(bucket, input.clock);
-  const heartbeat = new HeartbeatRepo(input.clock);
+  const heartbeat = input.stores?.heartbeat ?? new HeartbeatRepo(input.clock);
   const watchdog = new WatchdogPinger(input.watchdogUrl);
   const backup = new BackupService(bucket, input.clock, {
     facts: () => facts.all(),
-    pending_actions: () => [], // exposed via repo internals in production; empty view here
+    pending_actions: async () => [], // exposed via repo internals in production; empty view here
     wakeups: () => wakeupsRepo.list(),
     guests: () => guests.list(),
     connected_apps: () => appsRepo.list(),
     receipts: () => receipts.all(),
-    settings: () => Object.entries(settings.all()).map(([key, value]) => ({ key, value })),
+    settings: async () => Object.entries(await settings.all()).map(([key, value]) => ({ key, value })),
   });
 
   const agent = new AgentCore({

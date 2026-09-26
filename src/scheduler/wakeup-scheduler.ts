@@ -1,6 +1,6 @@
 import type { Clock } from "../clock.js";
 import type { Wakeup } from "../types.js";
-import { WakeupsRepo } from "./wakeups-repo.js";
+import type { WakeupsStore } from "./wakeups-repo.js";
 
 export type SetAlarm = (fireAtIso: string | null) => void;
 
@@ -12,38 +12,38 @@ export type SetAlarm = (fireAtIso: string | null) => void;
  */
 export class WakeupScheduler {
   constructor(
-    private readonly repo: WakeupsRepo,
+    private readonly repo: WakeupsStore,
     private readonly clock: Clock,
     private readonly setAlarm: SetAlarm = () => {},
   ) {}
 
-  schedule(fireAtIso: string, reason: string): Wakeup {
+  async schedule(fireAtIso: string, reason: string): Promise<Wakeup> {
     if (Number.isNaN(Date.parse(fireAtIso))) {
       throw new Error(`fire_at is not a real instant: ${fireAtIso}`);
     }
-    const w = this.repo.add(fireAtIso, reason);
-    this.resetAlarm();
+    const w = await this.repo.add(fireAtIso, reason);
+    await this.resetAlarm();
     return w;
   }
 
-  list(): Wakeup[] {
+  async list(): Promise<Wakeup[]> {
     return this.repo.list();
   }
 
-  cancel(id: string): boolean {
-    const ok = this.repo.remove(id);
-    if (ok) this.resetAlarm();
+  async cancel(id: string): Promise<boolean> {
+    const ok = await this.repo.remove(id);
+    if (ok) await this.resetAlarm();
     return ok;
   }
 
-  earliest(): Wakeup | null {
-    return this.repo.list()[0] ?? null;
+  async earliest(): Promise<Wakeup | null> {
+    return (await this.repo.list())[0] ?? null;
   }
 
   /** Wake-ups whose time is at or before now. */
-  due(): Wakeup[] {
+  async due(): Promise<Wakeup[]> {
     const now = this.clock.nowMs();
-    return this.repo.list().filter((w) => new Date(w.fireAt).getTime() <= now);
+    return (await this.repo.list()).filter((w) => new Date(w.fireAt).getTime() <= now);
   }
 
   /**
@@ -51,17 +51,17 @@ export class WakeupScheduler {
    * how many fired. onFire errors do not drop the wake-up silently — they surface.
    */
   async fireDue(onFire: (w: Wakeup) => Promise<void>): Promise<number> {
-    const due = this.due();
+    const due = await this.due();
     for (const w of due) {
       await onFire(w);
-      this.repo.remove(w.id);
+      await this.repo.remove(w.id);
     }
-    this.resetAlarm();
+    await this.resetAlarm();
     return due.length;
   }
 
-  private resetAlarm(): void {
-    const next = this.earliest();
+  private async resetAlarm(): Promise<void> {
+    const next = await this.earliest();
     this.setAlarm(next ? next.fireAt : null);
   }
 }

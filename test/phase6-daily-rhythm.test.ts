@@ -14,27 +14,27 @@ describe("Phase 6: daily rhythm", () => {
       { content: "Scheduled." },
     ]);
     await h.agent.handle(ownerEvent("remind me the night before my essay"));
-    expect(h.wakeups.list()).toHaveLength(1);
-    expect(h.wakeups.earliest()!.reason).toContain("essay");
+    expect(await h.wakeups.list()).toHaveLength(1);
+    expect((await h.wakeups.earliest())!.reason).toContain("essay");
   });
 
-  it("keeps the single alarm on the EARLIEST of several wake-ups", () => {
+  it("keeps the single alarm on the EARLIEST of several wake-ups", async () => {
     const clock = new FixedClock("2026-09-26T12:00:00.000Z");
     const alarm = vi.fn();
     const sched = new WakeupScheduler(new WakeupsRepo(clock), clock, alarm);
-    sched.schedule("2026-09-28T10:00:00.000Z", "later");
-    sched.schedule("2026-09-27T09:00:00.000Z", "sooner");
+    await sched.schedule("2026-09-28T10:00:00.000Z", "later");
+    await sched.schedule("2026-09-27T09:00:00.000Z", "sooner");
     expect(alarm).toHaveBeenLastCalledWith("2026-09-27T09:00:00.000Z");
     // Cancelling the earliest re-points the alarm at the next one.
-    const earliestId = sched.earliest()!.id;
-    sched.cancel(earliestId);
+    const earliestId = (await sched.earliest())!.id;
+    await sched.cancel(earliestId);
     expect(alarm).toHaveBeenLastCalledWith("2026-09-28T10:00:00.000Z");
   });
 
   it("fires only wake-ups whose time has PASSED (assert which firing, not that one fires)", async () => {
     const clock = new FixedClock("2026-09-26T10:00:00.000Z");
     const sched = new WakeupScheduler(new WakeupsRepo(clock), clock);
-    sched.schedule("2026-09-26T11:00:00.000Z", "at 11");
+    await sched.schedule("2026-09-26T11:00:00.000Z", "at 11");
     const fired: string[] = [];
     // At 10:00 nothing is due — must NOT fire an hour early.
     let n = await sched.fireDue(async (w) => void fired.push(w.reason));
@@ -60,7 +60,7 @@ describe("Phase 6: daily rhythm", () => {
       { content: "", toolCalls: [fakeToolCall("send_text", { message: "Morning digest: nothing urgent." })] },
       { content: "" },
     ]);
-    h.wakeups.schedule("2026-09-26T00:00:00.000Z", "past-due reminder"); // already due
+    await h.wakeups.schedule("2026-09-26T00:00:00.000Z", "past-due reminder"); // already due
     const res = await handleCron({
       cronExpr: HOURLY_CRON,
       agent: h.agent,
@@ -75,7 +75,7 @@ describe("Phase 6: daily rhythm", () => {
     expect(res.watchdog!.ok).toBe(false);
     expect(res.watchdog!.status).toBe("not_connected");
     // Heartbeat recorded for this cron.
-    expect(h.heartbeat.last(`cron:${HOURLY_CRON}`)).toBeTruthy();
+    expect(await h.heartbeat.last(`cron:${HOURLY_CRON}`)).toBeTruthy();
     // The model (not code) chose to send the digest.
     expect(h.ownerChannel.sent.some((m) => m.includes("digest"))).toBe(true);
   });

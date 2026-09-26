@@ -18,9 +18,9 @@ describe("Phase 5: calling", () => {
     const call = newCallSession({ callerId: "+1owner", role: "owner" });
     await h.agent.handle(callEvent("remember I prefer evening calls", call, "c1"));
     // The fact landed in the SAME store text uses.
-    expect(h.facts.activeFacts().some((f) => f.text.includes("evening calls"))).toBe(true);
+    expect((await h.facts.activeFacts()).some((f) => f.text.includes("evening calls"))).toBe(true);
     // The call transcript is in the shared history (memory review / history_search see it).
-    expect(h.conversation.all().some((m) => m.channel === "voice")).toBe(true);
+    expect((await h.conversation.all()).some((m) => m.channel === "voice")).toBe(true);
   });
 
   it("the system prompt says CHANNEL: voice and gives spoken guidance", async () => {
@@ -71,30 +71,30 @@ describe("Phase 5: calling", () => {
     expect(await malformed("12")).toBe(false);
   });
 
-  it("caller id classifies owner, guest and unknown", () => {
+  it("caller id classifies owner, guest and unknown", async () => {
     const clock = new FixedClock();
     const guests = new GuestsRepo(clock);
     // seed a guest, expiring in the future
     (async () => {})();
-    const g = guests.create({
+    const g = await guests.create({
       name: "Mom",
       phone: "+1guest",
       pinHash: "h",
       access: "can ask when Sid is free",
       expiresAt: new Date(clock.nowMs() + 3_600_000).toISOString(),
     });
-    expect(identifyCaller("+1owner", "+1owner", guests).role).toBe("owner");
-    expect(identifyCaller("+1guest", "+1owner", guests).role).toBe("guest");
-    expect(identifyCaller("+1stranger", "+1owner", guests).role).toBe("unknown");
+    expect((await identifyCaller("+1owner", "+1owner", guests)).role).toBe("owner");
+    expect((await identifyCaller("+1guest", "+1owner", guests)).role).toBe("guest");
+    expect((await identifyCaller("+1stranger", "+1owner", guests)).role).toBe("unknown");
     // Fail closed: with no configured owner phone, nobody is the owner.
-    expect(identifyCaller("+1owner", undefined, guests).role).toBe("unknown");
+    expect((await identifyCaller("+1owner", undefined, guests)).role).toBe("unknown");
     void g;
   });
 
   it("a guest call gets a minimal prompt with NO owner profile, memory or tools", async () => {
     const h = makeHarness([{ content: "Sid is not available to share that." }]);
     // Seed owner memory that must NOT leak.
-    h.facts.save({ text: "Sid's alarm code is 4821", kind: "durable", confidence: "stated", sourceType: "conversation", sourceRef: "x", expiresAt: null, pinned: true });
+    await h.facts.save({ text: "Sid's alarm code is 4821", kind: "durable", confidence: "stated", sourceType: "conversation", sourceRef: "x", expiresAt: null, pinned: true });
     const guestCall = newCallSession({ callerId: "+1guest", role: "guest", access: "May ask whether Sid is free this weekend." });
     const res = await h.agent.handle(callEvent("what's Sid's alarm code?", guestCall, "gc1"));
     const system = h.model.requests[0]!.messages[0]!.content;
@@ -104,7 +104,7 @@ describe("Phase 5: calling", () => {
     // No tools were offered to the guest.
     expect(h.model.requests[0]!.tools).toHaveLength(0);
     // Guest transcript is NOT written into Sid's shared conversation memory.
-    expect(h.conversation.all()).toHaveLength(0);
+    expect(await h.conversation.all()).toHaveLength(0);
     expect(res.reply).toContain("not available");
   });
 

@@ -1,10 +1,10 @@
 import type { Clock } from "../clock.js";
-import type { ConversationRepo } from "../conversation/conversation-repo.js";
-import type { PendingActionsRepo } from "../confirmations/pending-actions.js";
+import type { ConversationStore } from "../conversation/conversation-repo.js";
+import type { PendingStore } from "../confirmations/pending-actions.js";
 import type { EmbeddingProvider, VectorIndex } from "../memory/embeddings.js";
-import type { FactsRepo } from "../memory/facts-repo.js";
-import type { ReceiptsRepo } from "../receipts/receipts-repo.js";
-import type { SettingsRepo } from "../settings/settings-repo.js";
+import type { FactsStore } from "../memory/facts-repo.js";
+import type { ReceiptsStore } from "../receipts/receipts-repo.js";
+import type { SettingsStore } from "../settings/settings-repo.js";
 import type { ChatMessage, Model } from "../model/types.js";
 import type { Channel, Provenance, Trigger } from "../types.js";
 import { ToolDispatcher } from "../confirmations/gate.js";
@@ -12,7 +12,7 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { buildGuestPrompt } from "../voice/guest-prompt.js";
 import type { CallSession } from "../voice/call-session.js";
 import type { OwnerPinVerifier } from "../voice/pin.js";
-import type { GuestsRepo } from "../voice/guests-repo.js";
+import type { GuestsStore } from "../voice/guests-repo.js";
 import type { OwnerChannel, ToolContext } from "./tool-types.js";
 
 /** A runaway cap on tool-calling rounds (system protection, not "one action per turn"). */
@@ -38,11 +38,11 @@ export interface AgentResult {
 export interface AgentDeps {
   model: Model;
   dispatcher: ToolDispatcher;
-  facts: FactsRepo;
-  conversation: ConversationRepo;
-  receipts: ReceiptsRepo;
-  pending: PendingActionsRepo;
-  settings: SettingsRepo;
+  facts: FactsStore;
+  conversation: ConversationStore;
+  receipts: ReceiptsStore;
+  pending: PendingStore;
+  settings: SettingsStore;
   embeddings: EmbeddingProvider;
   vectors: VectorIndex;
   clock: Clock;
@@ -51,7 +51,7 @@ export interface AgentDeps {
   ownerId: string;
   apps?: import("../apps/app-manager.js").AppManager;
   ownerPinVerifier?: OwnerPinVerifier;
-  guests?: GuestsRepo;
+  guests?: GuestsStore;
   pinPepper?: string;
   wakeups?: import("../scheduler/wakeup-scheduler.js").WakeupScheduler;
   archive?: import("../plumbing/archive.js").ArchiveService;
@@ -102,14 +102,13 @@ export class AgentCore {
     // Persist Sid's own words (text/call). Wake-ups are not Sid's words.
     const interactive = event.trigger === "text" || event.trigger === "call";
     if (interactive) {
-      this.d.conversation.append("user", event.text, event.channel);
+      await this.d.conversation.append("user", event.text, event.channel);
     }
 
+    const recent = await this.d.conversation.recent();
     const messages: ChatMessage[] = [
-      { role: "system", content: this.currentSystemPrompt(event.channel) },
-      ...this.d.conversation
-        .recent()
-        .map((m): ChatMessage => ({ role: m.role, content: m.content })),
+      { role: "system", content: await this.currentSystemPrompt(event.channel) },
+      ...recent.map((m): ChatMessage => ({ role: m.role, content: m.content })),
     ];
     if (!interactive) {
       // Wake-ups arrive as an instruction the model acts on.
@@ -130,7 +129,7 @@ export class AgentCore {
         resp = await this.d.model.complete({ messages, tools });
       } catch (e) {
         const msg = (e as Error).message;
-        this.d.receipts.log({
+        await this.d.receipts.log({
           tool: "model",
           input: { round: rounds },
           result: { error: msg },
@@ -168,7 +167,7 @@ export class AgentCore {
     }
 
     if (rounds >= MAX_TOOL_ROUNDS && reply === "") {
-      this.d.receipts.log({
+      await this.d.receipts.log({
         tool: "agent_loop",
         input: { eventId: event.eventId },
         result: { note: "hit MAX_TOOL_ROUNDS without a final reply" },
@@ -181,7 +180,7 @@ export class AgentCore {
     if (interactive) {
       if (reply.trim() === "") {
         // No silent drops: surface an empty reply.
-        this.d.receipts.log({
+        await this.d.receipts.log({
           tool: "agent_reply",
           input: { eventId: event.eventId },
           result: { note: "model produced an empty reply on an interactive turn" },
@@ -190,7 +189,7 @@ export class AgentCore {
           status: "empty_reply",
         });
       } else {
-        this.d.conversation.append("assistant", reply, event.channel);
+        await this.d.conversation.append("assistant", reply, event.channel);
       }
     }
 
@@ -222,7 +221,7 @@ export class AgentCore {
       resp = await this.d.model.complete({ messages, tools: [] });
     } catch (e) {
       const msg = (e as Error).message;
-      this.d.receipts.log({
+      await this.d.receipts.log({
         tool: "model",
         input: { guestCall: call.callId },
         result: { error: msg },
@@ -237,21 +236,21 @@ export class AgentCore {
     return { reply, iterations: 0 };
   }
 
-  private currentSystemPrompt(channel: Channel): string {
+  private async currentSystemPrompt(channel: Channel): Promise<string> {
     return buildSystemPrompt({
       nowIso: this.d.clock.nowIso(),
       timezone: this.d.timezone,
       channel,
-      shadow: this.d.settings.isShadow(),
-      pinnedFacts: this.d.facts.pinnedFacts(),
-      personaOverride: this.d.settings.get("persona"),
+      shadow: await this.d.settings.isShadow(),
+      pinnedFacts: await this.d.facts.pinnedFacts(),
+      personaOverride: await this.d.settings.get("persona"),
     });
   }
 
   /** Code triggers the summary (size cap); the MODEL writes it. */
   private async summarizeIfNeeded(channel: Channel): Promise<void> {
-    if (!this.d.conversation.needsSummary()) return;
-    const all = this.d.conversation.all();
+    if (!(await this.d.conversation.needsSummary())) return;
+    const all = await this.d.conversation.all();
     const keep = 15;
     const toSummarizeCount = Math.max(0, all.length - keep);
     if (toSummarizeCount <= 0) return;
@@ -272,10 +271,10 @@ export class AgentCore {
       });
       const summary = resp.content.trim();
       if (summary !== "") {
-        this.d.conversation.applySummary(summary, toSummarizeCount);
+        await this.d.conversation.applySummary(summary, toSummarizeCount);
       }
     } catch (e) {
-      this.d.receipts.log({
+      await this.d.receipts.log({
         tool: "summarize",
         input: { channel, count: toSummarizeCount },
         result: { error: (e as Error).message },

@@ -12,7 +12,7 @@ export class BackupService {
     private readonly bucket: Bucket,
     private readonly clock: Clock,
     /** table name -> a function returning all its rows. */
-    private readonly sources: Record<string, () => unknown[]>,
+    private readonly sources: Record<string, () => Promise<unknown[]>>,
   ) {}
 
   async exportAll(): Promise<{ key: string; counts: Record<string, number> }> {
@@ -20,7 +20,7 @@ export class BackupService {
     const dump: Record<string, unknown[]> = {};
     const counts: Record<string, number> = {};
     for (const [table, read] of Object.entries(this.sources)) {
-      const rows = read();
+      const rows = await read();
       dump[table] = rows;
       counts[table] = rows.length;
     }
