@@ -1,0 +1,24 @@
+{
+  "forums": [
+    { "ForumId": 33001, "Name": "Unit 1 Discussions", "Description": { "Text": "", "Html": "" }, "StartDate": "2026-09-05T04:00:00.000Z", "EndDate": null, "IsHidden": false, "SortOrder": 0 },
+    { "ForumId": 33002, "Name": "Hidden staff forum", "Name2": null, "IsHidden": true, "SortOrder": 1 }
+  ],
+  "topics": {
+    "33001": [
+      {
+        "ForumId": 33001,
+        "TopicId": 34001,
+        "Name": "Should Canada pursue more free trade agreements?",
+        "Description": { "Text": "Post once, reply twice.", "Html": "<p>Post once, reply twice.</p>" },
+        "StartDate": "2026-09-05T04:00:00.000Z",
+        "EndDate": "2026-09-25T03:59:00.000Z",
+        "UnreadPostCount": 4,
+        "PostCount": 0,
+        "IsHidden": false,
+        "ScoreOutOf": 10,
+        "GradeItemId": null,
+        "SortOrder": 0
+      }
+    ]
+  }
+}

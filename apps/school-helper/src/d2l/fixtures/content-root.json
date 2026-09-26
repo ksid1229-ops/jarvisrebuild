@@ -1,0 +1,107 @@
+[
+  {
+    "Id": 801001,
+    "Title": "Unit 1 \u2014 The Global Marketplace",
+    "ShortTitle": "Unit 1",
+    "Type": 0,
+    "ModuleStartDate": "2026-09-02T04:00:00.000Z",
+    "ModuleEndDate": "2026-10-10T03:59:00.000Z",
+    "ModuleDueDate": null,
+    "IsHidden": false,
+    "IsLocked": false,
+    "Description": {
+      "Text": "Introduction to international business.",
+      "Html": "<p>Introduction to international business.</p>"
+    },
+    "SortOrder": 0,
+    "LastModifiedDate": "2026-09-01T12:00:00.000Z",
+    "Structure": [
+      {
+        "Id": 802001,
+        "Title": "Lesson 1.1 \u2014 What is international business?",
+        "Type": 1,
+        "TopicType": 1,
+        "Url": "/content/enforced/29940528-BBB4M/unit1/lesson1.html",
+        "StartDate": null,
+        "EndDate": null,
+        "DueDate": "2026-09-12T03:59:00.000Z",
+        "IsHidden": false,
+        "IsLocked": false,
+        "SortOrder": 0,
+        "Description": {
+          "Text": "Read the slides and the linked article.",
+          "Html": "<p>Read the <a href=\"https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit\">Unit 1 slides</a> and this <a href=\"https://www.cbc.ca/news/business/trade-example-1.7000001\">CBC article on Canadian trade</a>.</p>"
+        }
+      },
+      {
+        "Id": 802002,
+        "Title": "Lesson 1.2 \u2014 Worksheet: entry modes",
+        "Type": 1,
+        "TopicType": 1,
+        "Url": "/content/enforced/29940528-BBB4M/unit1/worksheet.html",
+        "DueDate": "2026-09-19T03:59:00.000Z",
+        "IsHidden": false,
+        "SortOrder": 1,
+        "Description": {
+          "Text": "Complete the worksheet.",
+          "Html": "<p>Complete the <a href=\"https://docs.google.com/document/d/1WorkSheetDocIdAbCdEfGhIjKlMnOp/edit\">entry modes worksheet</a>. Submit to the drop box.</p>"
+        }
+      },
+      {
+        "Id": 802003,
+        "Title": "Submit: Unit 1 Worksheet",
+        "Type": 1,
+        "TopicType": 3,
+        "Url": "/d2l/lms/dropbox/user/folder_submit_files.d2l?db=550012&ou=29940528",
+        "IsHidden": false,
+        "SortOrder": 2,
+        "Description": null
+      },
+      {
+        "Id": 802004,
+        "Title": "Unit 1 Check-in Quiz",
+        "Type": 1,
+        "TopicType": 3,
+        "Url": "/d2l/lms/quizzing/user/quiz_summary.d2l?qi=44021&ou=29940528",
+        "IsHidden": false,
+        "SortOrder": 3,
+        "Description": null
+      },
+      {
+        "Id": 802005,
+        "Title": "Make-up Task (if you missed the activity)",
+        "Type": 1,
+        "TopicType": 3,
+        "Url": "/d2l/lms/dropbox/user/folder_submit_files.d2l?db=550099&ou=29940528",
+        "IsHidden": false,
+        "SortOrder": 4,
+        "Description": null
+      }
+    ]
+  },
+  {
+    "Id": 801002,
+    "Title": "Unit 2 \u2014 Culture and Ethics",
+    "Type": 0,
+    "ModuleStartDate": "2026-10-11T04:00:00.000Z",
+    "ModuleDueDate": "2026-11-20T04:59:00.000Z",
+    "IsHidden": false,
+    "SortOrder": 1,
+    "Description": null,
+    "Structure": [
+      {
+        "Id": 802010,
+        "Title": "Lesson 2.1 \u2014 Cultural dimensions",
+        "Type": 1,
+        "TopicType": 1,
+        "Url": "/content/enforced/29940528-BBB4M/unit2/lesson1.html",
+        "DueDate": null,
+        "SortOrder": 0,
+        "Description": {
+          "Text": "",
+          "Html": "<p>See https://docs.google.com/document/d/1CultureNotesDocIdXyz9876543210/edit for the notes.</p>"
+        }
+      }
+    ]
+  }
+]

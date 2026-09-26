@@ -1,0 +1,144 @@
+{
+  "$comment": "Tool descriptions Jarvis should load for the School Helper connected app. Jarvis serves these from the observation evidence School Helper pushes to /school/observations; School Helper does not implement them. Jarvis already has school_d2l_status and school_collector_revoke from merged PR #169 — these are additions, not replacements.",
+  "app": {
+    "id": "school-helper",
+    "name": "School Helper",
+    "description": "Sid's Grade 12 coursework tracker. Reads his two D2L boards (LDSB and Durham) read-only and pushes the raw D2L evidence. It supplies facts only — it never ranks, prioritises or judges what matters, and it never submits or posts anything to D2L.",
+    "timezone": "America/Toronto",
+    "wire_timezone": "UTC",
+    "source_of_truth": "school_collector_evidence rows ingested from /school/observations"
+  },
+  "conventions": {
+    "timestamps": "All times on the wire are ISO 8601 UTC instants. Sid's local timezone is America/Toronto; convert before speaking dates aloud.",
+    "null_due_date": "A null due date means NO DATE IS KNOWN. It does not mean there is no deadline, and it must never be reported as 'no due date' without that caveat.",
+    "refused_routes": "A route with status 403 or 404 and complete:true is a fully observed refusal. It is evidence, not a failure. A refused submissions route does NOT mean the work is unsubmitted — it means permission was denied and submission state is unknown.",
+    "failures": "A route with complete:false carries a body of {\"collectorFailure\": \"...\"}. This is a read failure. It is NOT an empty course and NOT 'nothing is due'.",
+    "host_failure_batch": "A batch with course:null, courseIds:[] and enrollmentComplete:false means that whole board could not be read. Say so explicitly rather than reporting that board as clear.",
+    "empty_list": "A 200 response with an empty JSON array is a real empty list and may be reported as 'nothing there'.",
+    "staleness": "Evidence is only as fresh as the last push. Always check fetchedAt before answering a time-sensitive question, and say how old the reading is when it is more than a day."
+  },
+  "tools": [
+    {
+      "name": "school_snapshot_read",
+      "description": "Returns the current known state of Sid's coursework, assembled from the most recent observation evidence for each course: assignments, quizzes, discussions, announcements, due dates, submission status, grades, weights and links. Use this for 'what have I got on', 'what's due this week', 'what's my mark in X'. The returned items are raw facts in D2L's own terms — decide relevance and urgency yourself; School Helper deliberately does not send priority scores.",
+      "example": "Sid asks 'what have I got due this week?' -> school_snapshot_read({ due_before: '2026-10-03T03:59:00.000Z', include_completed: false })",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "course_id": {
+            "type": "string",
+            "description": "Restrict to one course, as the D2L org unit id (e.g. '1001'). Omit for all courses."
+          },
+          "board": {
+            "type": "string",
+            "enum": ["ldsb.elearningontario.ca", "durham.elearningontario.ca"],
+            "description": "Restrict to one board. Omit for both."
+          },
+          "due_before": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Only items with a known due date at or before this ISO instant. Items with a null due date are excluded by this filter — request them separately with include_undated."
+          },
+          "due_after": { "type": "string", "format": "date-time" },
+          "include_undated": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also return items whose due date is unknown (null)."
+          },
+          "include_completed": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include items already submitted or graded."
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["assignment", "quiz", "discussion", "announcement", "lesson", "unit", "other"]
+            },
+            "description": "Restrict to certain item kinds."
+          },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "school_changes_since",
+      "description": "Returns what changed in Sid's coursework since a given time: new assignments, changed due dates, new grades, new announcements, and items that stopped appearing. Use this for 'anything new?', 'did my mark come back?', or to open a morning catch-up. Compares successive observation batches, so a change is only reported when the underlying D2L evidence actually moved — not when a read simply failed.",
+      "example": "Sid asks 'anything new since yesterday?' -> school_changes_since({ since: '2026-09-25T12:00:00.000Z', kinds: ['grade', 'new_item', 'due_date'] })",
+      "input_schema": {
+        "type": "object",
+        "required": ["since"],
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO instant to compare against. Usually the last time you spoke to Sid about school."
+          },
+          "course_id": { "type": "string", "description": "Restrict to one course." },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["new_item", "removed_item", "due_date", "grade", "feedback", "status", "announcement", "weight"]
+            },
+            "description": "Restrict to certain kinds of change. Omit for all."
+          },
+          "include_read_failures": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include periods where a board or route could not be read. Keep this true: a gap in evidence is not the same as no change, and Sid should be told when a board went dark."
+          },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "school_request_sync",
+      "description": "Asks School Helper to read D2L again and push fresh evidence. Use when the stored evidence is stale and Sid is asking a time-sensitive question. IMPORTANT: this cannot be delivered while Sid's browser is closed, and there is currently no pull channel for the extension to receive it — the request is recorded and takes effect the next time School Helper checks in. Never tell Sid a sync has happened; tell him one has been requested, and say how old the current evidence is.",
+      "example": "Sid asks 'is that definitely up to date?' -> school_request_sync({ reason: 'Sid asked whether the Economics deadline had moved' })",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Why a fresh read is wanted. Shown to Sid in the link log."
+          },
+          "board": {
+            "type": "string",
+            "enum": ["ldsb.elearningontario.ca", "durham.elearningontario.ca"],
+            "description": "Restrict the requested read to one board."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "school_open_item",
+      "description": "Opens a piece of coursework in Sid's browser at its D2L URL. Use when Sid says 'open that' or 'take me to it'. Like school_request_sync, this needs School Helper to be running and to check in — it is queued, not instant. It only ever opens a page for Sid to look at: it cannot submit, post, start a quiz attempt or mark anything as read.",
+      "example": "Sid says 'open the Economics essay' -> school_open_item({ item_url: 'https://durham.elearningontario.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?db=55&ou=1002' })",
+      "input_schema": {
+        "type": "object",
+        "required": ["item_url"],
+        "properties": {
+          "item_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The D2L URL from the evidence. Must be on ldsb.elearningontario.ca or durham.elearningontario.ca; any other host is refused."
+          },
+          "course_id": { "type": "string", "description": "Org unit id, for disambiguation in the link log." },
+          "note": { "type": "string", "maxLength": 200, "description": "Why it is being opened. Shown to Sid." }
+        },
+        "additionalProperties": false
+      }
+    }
+  ],
+  "refusals": {
+    "unsupported_action": "School Helper executes only an explicit allow-list of actions. Anything outside it is refused and reported back as unsupported — it is never attempted.",
+    "never_submits": "No tool here can submit an assignment, post to a discussion, start or answer a quiz, or mark anything read. That is a product rule, not a configuration setting.",
+    "no_pull_channel": "school_request_sync and school_open_item currently have no delivery path: the gateway exposes no route for the extension to fetch pending requests. Treat them as queued intents and tell Sid plainly that they are pending."
+  }
+}

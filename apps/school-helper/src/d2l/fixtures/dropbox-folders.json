@@ -1,0 +1,37 @@
+[
+  {
+    "Id": 550012,
+    "CategoryId": 9001,
+    "Name": "Unit 1 Worksheet — Entry Modes",
+    "CustomInstructions": {
+      "Text": "Answer all six questions. Cite the slides.",
+      "Html": "<p>Answer all six questions. Cite the <a href=\"https://docs.google.com/presentation/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit\">Unit 1 slides</a>.</p>"
+    },
+    "Attachments": [],
+    "TotalFiles": 0,
+    "UnreadFiles": 0,
+    "FlaggedFiles": 0,
+    "TotalUsers": 28,
+    "TotalUsersWithSubmissions": 19,
+    "TotalUsersWithFeedback": 12,
+    "DueDate": "2026-09-19T03:59:00.000Z",
+    "DisplayInCalendar": true,
+    "Availability": { "StartDate": "2026-09-05T04:00:00.000Z", "EndDate": "2026-09-26T03:59:00.000Z" },
+    "GroupTypeId": null,
+    "IsHidden": false,
+    "Assessment": { "ScoreDenominator": 20, "Rubrics": [{ "RubricId": 7301, "Name": "BBB4M Worksheet Rubric" }] },
+    "GradeItemId": 60011
+  },
+  {
+    "Id": 550013,
+    "CategoryId": 9001,
+    "Name": "Unit 2 Culture Report",
+    "CustomInstructions": { "Text": "Two pages, APA.", "Html": "<p>Two pages, APA.</p>" },
+    "TotalFiles": 0,
+    "DueDate": "2026-11-14T04:59:00.000Z",
+    "Availability": { "StartDate": null, "EndDate": null },
+    "IsHidden": false,
+    "Assessment": { "ScoreDenominator": 40, "Rubrics": [] },
+    "GradeItemId": 60012
+  }
+]

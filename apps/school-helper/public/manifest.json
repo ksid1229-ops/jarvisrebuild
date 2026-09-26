@@ -1,0 +1,87 @@
+{
+  "manifest_version": 3,
+  "name": "School Helper",
+  "version": "1.1.0",
+  "description": "Local-only tracker for D2L coursework, with answer notes, rubric checks and a Google Docs worksheet formatter.",
+  "minimum_chrome_version": "114",
+  "action": {
+    "default_title": "Open School Helper dashboard",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "dashboard.html",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "alarms",
+    "notifications",
+    "sidePanel",
+    "identity",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://ldsb.elearningontario.ca/*",
+    "https://durham.elearningontario.ca/*",
+    "https://docs.googleapis.com/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ldsb.elearningontario.ca/*",
+        "https://durham.elearningontario.ca/*"
+      ],
+      "js": [
+        "content-d2l.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://docs.google.com/document/*"
+      ],
+      "js": [
+        "content-gdocs.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dashboard.html",
+        "sidepanel.html",
+        "icons/*"
+      ],
+      "matches": [
+        "https://ldsb.elearningontario.ca/*",
+        "https://durham.elearningontario.ca/*",
+        "https://docs.google.com/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

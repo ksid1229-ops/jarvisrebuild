@@ -1,0 +1,19 @@
+[
+  {
+    "Id": 77001,
+    "Title": "Unit 1 worksheet due date moved",
+    "Body": { "Text": "The worksheet is now due Friday.", "Html": "<p>The worksheet is now due Friday. See the <a href=\"https://docs.google.com/document/d/1WorkSheetDocIdAbCdEfGhIjKlMnOp/edit\">worksheet</a>.</p>" },
+    "StartDate": "2026-09-10T12:00:00.000Z",
+    "EndDate": null,
+    "IsGlobal": false,
+    "IsPublished": true,
+    "ShowOnlyInCourseOfferings": false,
+    "Attachments": []
+  },
+  {
+    "Id": 77002,
+    "Title": "Draft announcement (unpublished)",
+    "Body": { "Text": "", "Html": "" },
+    "IsPublished": false
+  }
+]

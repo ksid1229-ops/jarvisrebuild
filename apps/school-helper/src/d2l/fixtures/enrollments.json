@@ -1,0 +1,19 @@
+{
+  "PagingInfo": { "Bookmark": null, "HasMoreItems": false },
+  "Items": [
+    {
+      "OrgUnit": { "Id": 29940528, "Type": { "Id": 3, "Code": "Course Offering", "Name": "Course Offering" }, "Name": "BBB4M0-01 International Business", "Code": "BBB4M0-01" },
+      "Access": { "IsActive": true, "StartDate": "2026-09-02T04:00:00.000Z", "EndDate": "2027-01-31T04:59:00.000Z", "CanAccess": true, "ClasslistRoleName": "Student" },
+      "Role": { "Id": 110, "Code": "Student", "Name": "Student" }
+    },
+    {
+      "OrgUnit": { "Id": 29940585, "Type": { "Id": 3, "Code": "Course Offering", "Name": "Course Offering" }, "Name": "ENG4UE-02 English", "Code": "ENG4UE-02" },
+      "Access": { "IsActive": true, "CanAccess": true },
+      "Role": { "Id": 110, "Code": "Student", "Name": "Student" }
+    },
+    {
+      "OrgUnit": { "Id": 6606, "Type": { "Id": 6, "Code": "Department", "Name": "Department" }, "Name": "Business Studies" },
+      "Access": { "IsActive": true, "CanAccess": true }
+    }
+  ]
+}

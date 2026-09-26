@@ -1,0 +1,44 @@
+{
+  "objects": [
+    { "Id": 60011, "Name": "Unit 1 Worksheet", "ShortName": "U1WS", "GradeType": "Numeric", "MaxPoints": 20, "Weight": 5, "IsBonus": false, "AssociatedTool": { "ToolId": 8, "ToolItemId": 550012 } },
+    { "Id": 60012, "Name": "Unit 2 Culture Report", "GradeType": "Numeric", "MaxPoints": 40, "Weight": 15, "AssociatedTool": { "ToolId": 8, "ToolItemId": 550013 } },
+    { "Id": 60020, "Name": "Unit 1 Check-in Quiz", "GradeType": "Numeric", "MaxPoints": 10, "Weight": 3, "AssociatedTool": { "ToolId": 7, "ToolItemId": 44021 } },
+    { "Id": 60099, "Name": "Final Calculated Grade", "GradeType": "Numeric", "MaxPoints": 100, "Weight": null, "AssociatedTool": null }
+  ],
+  "values": [
+    {
+      "DisplayedGrade": "17 / 20",
+      "GradeObjectIdentifier": "60011",
+      "GradeObjectName": "Unit 1 Worksheet",
+      "GradeObjectType": 1,
+      "GradeObjectTypeName": "Numeric",
+      "PointsNumerator": 17,
+      "PointsDenominator": 20,
+      "WeightedNumerator": 4.25,
+      "WeightedDenominator": 5,
+      "Comments": { "Text": "Good use of the slides.", "Html": "<p>Good use of the slides.</p>" },
+      "PrivateComments": { "Text": "", "Html": "" },
+      "LastModified": "2026-09-22T18:04:00.000Z"
+    },
+    {
+      "DisplayedGrade": "8 / 10",
+      "GradeObjectIdentifier": "60020",
+      "GradeObjectName": "Unit 1 Check-in Quiz",
+      "GradeObjectType": 1,
+      "GradeObjectTypeName": "Numeric",
+      "PointsNumerator": 8,
+      "PointsDenominator": 10,
+      "Comments": { "Text": "", "Html": "" },
+      "LastModified": "2026-09-15T14:00:00.000Z"
+    },
+    {
+      "DisplayedGrade": "82 %",
+      "GradeObjectIdentifier": "60099",
+      "GradeObjectName": "Final Calculated Grade",
+      "GradeObjectTypeName": "FinalGrade",
+      "PointsNumerator": 82,
+      "PointsDenominator": 100,
+      "LastModified": "2026-09-22T18:05:00.000Z"
+    }
+  ]
+}

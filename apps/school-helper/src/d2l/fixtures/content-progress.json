@@ -1,0 +1,5 @@
+[
+  { "TopicId": 802001, "CompletionType": 1, "IsCompleted": true, "LastVisited": "2026-09-10T18:00:00.000Z", "NumberOfVisits": 3 },
+  { "TopicId": 802002, "CompletionType": 1, "IsCompleted": false, "LastVisited": "2026-09-16T20:11:00.000Z", "NumberOfVisits": 1 },
+  { "TopicId": 802010, "CompletionType": 1, "IsCompleted": false, "NumberOfVisits": 0 }
+]

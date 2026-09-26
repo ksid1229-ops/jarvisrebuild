@@ -1,0 +1,29 @@
+[
+  {
+    "Entity": { "EntityId": 4455661, "EntityType": "User", "Active": true, "DisplayName": "Sid" },
+    "Status": 1,
+    "Feedback": {
+      "Score": 17.0,
+      "Feedback": { "Text": "Good use of the slides. Expand question 4 with a second example.", "Html": "<p>Good use of the slides. Expand question 4 with a second example.</p>" },
+      "RubricAssessments": [],
+      "IsGraded": true,
+      "GradedSymbol": null,
+      "GradedDate": "2026-09-22T18:04:00.000Z"
+    },
+    "Submissions": [
+      {
+        "Id": 991001,
+        "SubmittedBy": { "Identifier": "4455661", "DisplayName": "Sid" },
+        "SubmissionDate": "2026-09-18T23:41:00.000Z",
+        "Comment": { "Text": "", "Html": "" },
+        "Files": [{ "FileId": 1, "FileName": "unit1-worksheet.pdf", "Size": 184320, "IsFlagged": false, "IsRead": true }]
+      }
+    ]
+  },
+  {
+    "Entity": { "EntityId": 4455999, "EntityType": "User", "Active": true, "DisplayName": "Other Student" },
+    "Status": 0,
+    "Feedback": null,
+    "Submissions": []
+  }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "Id": 7301,
+    "Name": "BBB4M Worksheet Rubric",
+    "Description": { "Text": "Ontario four-level rubric.", "Html": "<p>Ontario four-level rubric.</p>" },
+    "Type": 1,
+    "ScoringMethod": 1,
+    "Levels": [
+      { "Id": 1, "Name": "Level 1 (50-59%)", "Points": 5, "RangeStart": 50 },
+      { "Id": 2, "Name": "Level 2 (60-69%)", "Points": 10, "RangeStart": 60 },
+      { "Id": 3, "Name": "Level 3 (70-79%)", "Points": 15, "RangeStart": 70 },
+      { "Id": 4, "Name": "Level 4 (80-100%)", "Points": 20, "RangeStart": 80 }
+    ],
+    "Criteria": [
+      {
+        "Id": 501,
+        "Name": "Knowledge and Understanding",
+        "Cells": [
+          { "LevelId": 1, "Description": { "Text": "Demonstrates limited understanding of entry modes.", "Html": "<p>Demonstrates limited understanding of entry modes.</p>" }, "Points": 5 },
+          { "LevelId": 2, "Description": { "Text": "Demonstrates some understanding of entry modes.", "Html": "" }, "Points": 10 },
+          { "LevelId": 3, "Description": { "Text": "Demonstrates considerable understanding of entry modes.", "Html": "" }, "Points": 15 },
+          { "LevelId": 4, "Description": { "Text": "Demonstrates thorough understanding of all four entry modes, with accurate terminology and a clear example for each.", "Html": "<p>Demonstrates thorough understanding of all four entry modes, with accurate terminology and a clear example for each.</p>" }, "Points": 20 }
+        ]
+      },
+      {
+        "Id": 502,
+        "Name": "Application",
+        "Cells": [
+          { "LevelId": 3, "Description": { "Text": "Applies concepts to the case with considerable effectiveness.", "Html": "" }, "Points": 15 },
+          { "LevelId": 4, "Description": { "Text": "Applies concepts to the Canadian case study with a high degree of effectiveness, citing evidence from the provided sources.", "Html": "" }, "Points": 20 }
+        ]
+      }
+    ]
+  }
+]
