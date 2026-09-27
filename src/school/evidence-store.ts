@@ -69,16 +69,30 @@ export class EvidenceStore {
     return res.results.map(rowToEvidence);
   }
 
-  /** Newest-first history for one course, any outcome. */
-  async historyForCourse(host: string, courseId: string, limit: number): Promise<EvidenceRow[]> {
-    const res = await this.db
+  /**
+   * Everything needed to diff a course since a moment: every batch received
+   * after it (any outcome), plus the newest GOOD batch at or before it as the
+   * baseline. Newest first. No row cap — a busy week never hides a change.
+   */
+  async historyForCourseSince(host: string, courseId: string, sinceIso: string): Promise<{ rows: EvidenceRow[]; hasBaseline: boolean }> {
+    const after = await this.db
       .prepare(
         `SELECT * FROM school_evidence
-         WHERE host = ? AND course_id = ? ORDER BY received_at DESC LIMIT ?`,
+         WHERE host = ? AND course_id = ? AND received_at > ? ORDER BY received_at DESC`,
       )
-      .bind(host, courseId, limit)
+      .bind(host, courseId, sinceIso)
       .all<D1Row>();
-    return res.results.map(rowToEvidence);
+    const baseline = await this.db
+      .prepare(
+        `SELECT * FROM school_evidence
+         WHERE host = ? AND course_id = ? AND received_at <= ? AND outcome = 'good'
+         ORDER BY received_at DESC LIMIT 1`,
+      )
+      .bind(host, courseId, sinceIso)
+      .first<D1Row>();
+    const rows = after.results.map(rowToEvidence);
+    if (baseline) rows.push(rowToEvidence(baseline));
+    return { rows, hasBaseline: !!baseline };
   }
 
   async receivedAfter(sinceIso: string): Promise<EvidenceRow[]> {

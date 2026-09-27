@@ -33,6 +33,7 @@ import { D1GuestsRepo } from "./voice/guests-repo.js";
 import { D1WakeupsRepo } from "./scheduler/wakeups-repo.js";
 import { D1HeartbeatRepo } from "./plumbing/heartbeat.js";
 import { COLLECTOR_ENVELOPE_HEADER, handleSchoolRequest } from "./school/routes.js";
+import { schoolVaultSnapshot } from "./school/school-tools.js";
 
 /**
  * Worker router. Receives Telegram webhooks, verifies them (fail closed), and
@@ -503,8 +504,17 @@ export class JarvisDurableObject {
     if (!authorizeVaultExport(token, this.env.VAULT_EXPORT_TOKEN)) {
       return json({ ok: false, reason: "vault export requires a valid token" }, 401);
     }
-    const exported = buildVaultExport(await built.facts.all(), await built.wakeupsRepo.list());
-    return json({ ok: true, count: exported.count, notes: exported.notes });
+    const school = built.school ? await schoolVaultSnapshot(built.school.evidence, new Date()) : undefined;
+    const exported = buildVaultExport(await built.facts.all(), await built.wakeupsRepo.list(), {
+      isActive: (f) => built.facts.isActive(f),
+      ...(school ? { school } : {}),
+    });
+    return json({
+      ok: true,
+      count: exported.count,
+      notes: exported.notes,
+      ...(exported.schoolUnreadable ? { schoolUnreadable: exported.schoolUnreadable } : {}),
+    });
   }
 
   private async handleSchool(request: Request): Promise<Response> {

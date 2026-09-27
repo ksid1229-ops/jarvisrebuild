@@ -32,7 +32,11 @@ export class ArchiveService {
     return key;
   }
 
-  async search(query: string, range?: { fromIso?: string; toIso?: string }): Promise<{ results: ArchiveEntry[]; dropped: number }> {
+  async search(
+    query: string,
+    range?: { fromIso?: string; toIso?: string },
+    page: { limit?: number; offset?: number } = {},
+  ): Promise<{ results: ArchiveEntry[]; total: number; nextOffset: number | null }> {
     const from = range?.fromIso ? new Date(range.fromIso).getTime() : -Infinity;
     const to = range?.toIso ? new Date(range.toIso).getTime() : Infinity;
     const fromDay = range?.fromIso ? new Date(range.fromIso).toISOString().slice(0, 10) : "";
@@ -50,8 +54,12 @@ export class ArchiveService {
       if (t < from || t > to) continue;
       if (entry.content.toLowerCase().includes(q)) matches.push(entry);
     }
-    const HARD_CAP = 500;
-    return { results: matches.slice(0, HARD_CAP), dropped: Math.max(0, matches.length - HARD_CAP) };
+    // No count cap (Sid: Jarvis gets as much as he needs). Paging is the model's choice.
+    matches.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    const offset = page.offset ?? 0;
+    const results = matches.slice(offset, page.limit === undefined ? undefined : offset + page.limit);
+    const shown = offset + results.length;
+    return { results, total: matches.length, nextOffset: shown < matches.length ? shown : null };
   }
 
   /** A bounded range lists only its days; an open range lists everything. */
@@ -73,11 +81,18 @@ export class ArchiveService {
 export const archiveSearch: Tool = {
   name: "archive_search",
   description:
-    "Search the full conversation archive (texts and call transcripts) by date. Use it to find older " +
-    "exchanges beyond recent history. query: words to look for. from/to: optional RFC3339 UTC bounds.",
+    "Search the full conversation archive (texts and call transcripts) by date, oldest first. Use it " +
+    "to find older exchanges beyond recent history. query: words to look for. from/to: optional " +
+    "RFC3339 UTC bounds. limit/offset: optional — leave limit out to get every match.",
   parameters: {
     type: "object",
-    properties: { query: { type: "string" }, from: { type: "string" }, to: { type: "string" } },
+    properties: {
+      query: { type: "string" },
+      from: { type: "string" },
+      to: { type: "string" },
+      limit: { type: "number", description: "Optional: how many you want. Leave it out to get every match." },
+      offset: { type: "number", description: "Optional: skip this many first (paging)." },
+    },
     required: ["query"],
   },
   async run(args, ctx): Promise<ToolResult> {
@@ -85,9 +100,27 @@ export const archiveSearch: Tool = {
     const query = String(args.query ?? "");
     if (query.trim() === "") return { ok: false, status: "refused", message: "query is required." };
     const range: { fromIso?: string; toIso?: string } = {};
-    if (typeof args.from === "string") range.fromIso = args.from;
-    if (typeof args.to === "string") range.toIso = args.to;
-    const { results, dropped } = await ctx.archive.search(query, range);
-    return { ok: true, status: "ok", data: { results, dropped } };
+    for (const [k, key] of [["from", "fromIso"], ["to", "toIso"]] as const) {
+      if (args[k] === undefined) continue;
+      if (typeof args[k] !== "string" || Number.isNaN(Date.parse(args[k] as string))) {
+        return { ok: false, status: "refused", message: `${k} is not a real date: ${JSON.stringify(args[k])}` };
+      }
+      range[key] = args[k] as string;
+    }
+    const page: { limit?: number; offset?: number } = {};
+    if (args.limit !== undefined) {
+      if (typeof args.limit !== "number" || !Number.isFinite(args.limit) || args.limit < 1) {
+        return { ok: false, status: "refused", message: `limit must be a whole number of at least 1: ${JSON.stringify(args.limit)}` };
+      }
+      page.limit = Math.floor(args.limit);
+    }
+    if (args.offset !== undefined) {
+      if (typeof args.offset !== "number" || !Number.isFinite(args.offset) || args.offset < 0) {
+        return { ok: false, status: "refused", message: `offset must be a whole number of at least 0: ${JSON.stringify(args.offset)}` };
+      }
+      page.offset = Math.floor(args.offset);
+    }
+    const r = await ctx.archive.search(query, range, page);
+    return { ok: true, status: "ok", data: r };
   },
 };

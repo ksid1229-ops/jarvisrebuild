@@ -206,12 +206,14 @@ describe("history_search", () => {
     expect(one.totalMatches).toBe(3); // the limit never hides the size of the answer
   });
 
-  it("refuses a missing limit, a fake date and a bad channel instead of defaulting", async () => {
+  it("refuses a fake date, a bad channel and a bad limit/offset instead of guessing (a missing limit means everything)", async () => {
     const ctx = makeHarness([]).ctxFor(ownerEvent("x"));
-    expect((await historySearch.run({ query: "a" }, ctx)).status).toBe("refused");
+    expect((await historySearch.run({ query: "a" }, ctx)).status).toBe("ok");
     expect((await historySearch.run({ query: "a", limit: 5, since: "last tuesday" }, ctx)).status).toBe("refused");
     expect((await historySearch.run({ query: "a", limit: 5, channel: "sms" }, ctx)).status).toBe("refused");
-    expect((await memorySearch.run({ query: "a" }, ctx)).status).toBe("refused");
+    expect((await historySearch.run({ query: "a", limit: 0 }, ctx)).status).toBe("refused");
+    expect((await historySearch.run({ query: "a", offset: -1 }, ctx)).status).toBe("refused");
+    expect((await memorySearch.run({ query: "a", limit: "lots" }, ctx)).status).toBe("refused");
   });
 
   it("D1: the same filters against real SQLite", async () => {

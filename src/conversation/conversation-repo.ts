@@ -31,8 +31,10 @@ export interface HistoryQuery {
   since?: string;
   until?: string;
   channel?: Channel;
-  /** How many matches to return, newest first. The caller (the model) chooses. */
-  limit: number;
+  /** How many matches to return, newest first. The model chooses; omitted = every match. */
+  limit?: number;
+  /** Skip this many newest matches first (paging). Omitted = 0. */
+  offset?: number;
 }
 
 export interface HistoryResult {
@@ -150,7 +152,7 @@ export class ConversationRepo implements ConversationStore {
     const real = this.messages.filter((m) => !m.isSummary);
     const matches = real.filter((m) => matchesQuery(m, q, from, to, needle)).reverse();
     return {
-      results: matches.slice(0, q.limit),
+      results: matches.slice(q.offset ?? 0, q.limit === undefined ? undefined : (q.offset ?? 0) + q.limit),
       totalMatches: matches.length,
       storedMessages: real.length,
       earliestStored: real[0]?.createdAt ?? null,
@@ -272,8 +274,9 @@ export class D1ConversationRepo implements ConversationStore {
       .bind(...params)
       .first<D1Row>();
     const rows = await this.db
-      .prepare(`SELECT * FROM messages WHERE ${clause} ORDER BY rowid DESC LIMIT ?`)
-      .bind(...params, q.limit)
+      // LIMIT -1 = no limit in SQLite: omitting `limit` returns every match.
+      .prepare(`SELECT * FROM messages WHERE ${clause} ORDER BY rowid DESC LIMIT ? OFFSET ?`)
+      .bind(...params, q.limit ?? -1, q.offset ?? 0)
       .all<D1Row>();
     const coverage = await this.db
       .prepare(`SELECT COUNT(*) AS n, MIN(created_at) AS earliest FROM messages WHERE is_summary = 0`)

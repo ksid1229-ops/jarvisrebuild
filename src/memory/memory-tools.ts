@@ -348,40 +348,62 @@ export const memoryExplain: Tool = {
   },
 };
 
+/**
+ * Paging arguments shared by the search/list tools. Sid's rule (2026-09-26):
+ * "Jarvis should get as much as he needs to do what he wants." So `limit` is
+ * optional and omitting it means EVERY match — there is no hidden count cap.
+ * `offset` pages through big answers. Returns null + reason on a bad value.
+ */
+function paging(args: Record<string, unknown>): { limit?: number; offset: number } | { error: string } {
+  const out: { limit?: number; offset: number } = { offset: 0 };
+  if (args.limit !== undefined && args.limit !== null) {
+    const l = modelLimit(args.limit);
+    if (l === null) return { error: `limit must be a whole number of at least 1 (or leave it out for everything): ${JSON.stringify(args.limit)}` };
+    out.limit = l;
+  }
+  if (args.offset !== undefined && args.offset !== null) {
+    if (typeof args.offset !== "number" || !Number.isFinite(args.offset) || args.offset < 0) {
+      return { error: `offset must be a whole number of at least 0: ${JSON.stringify(args.offset)}` };
+    }
+    out.offset = Math.floor(args.offset);
+  }
+  return out;
+}
+
+const PAGING_PROPS = {
+  limit: { type: "number", description: "Optional: how many you want. Leave it out to get every match." },
+  offset: { type: "number", description: "Optional: skip this many first (to page through a big answer)." },
+};
+
 export const memorySearch: Tool = {
   name: "memory_search",
   description:
     "Meaning search over everything you remember about Sid. Returns facts related to your query, " +
-    "even when the words differ. Hidden, expired and outdated facts are never returned. Use it " +
-    "whenever a reply would be better with what you know. limit: how many results you want — " +
-    "required, you choose (a few for a quick check, more when building a digest). The result also " +
-    "reports how many active facts are not yet in the meaning index, so an empty answer is never " +
-    "mistaken for 'nothing remembered' — use history_search as a fallback then.",
+    "best match first, even when the words differ. Hidden, expired and outdated facts are never " +
+    "returned. limit/offset are optional — leave limit out to get every match the meaning index can " +
+    "rank. The result reports indexCeiling if the index itself can rank no more (use memory_list to " +
+    "read everything), and how many active facts are not yet indexed, so an empty answer is never " +
+    "mistaken for 'nothing remembered'.",
   parameters: {
     type: "object",
-    properties: {
-      query: { type: "string" },
-      limit: { type: "number", description: "How many results you want. Required; you choose." },
-    },
-    required: ["query", "limit"],
+    properties: { query: { type: "string" }, ...PAGING_PROPS },
+    required: ["query"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const query = String(args.query ?? "");
     if (query.trim() === "") return refused("query is required.");
-    const requested = modelLimit(args.limit);
-    if (requested === null) return refused("limit is required: a whole number of results you want. Not defaulted.");
-    // System-protection cap only (Vectorize's own topK ceiling); REPORTED when it bites.
-    const HARD_CAP = 50;
-    const topK = Math.min(requested, HARD_CAP);
+    const pg = paging(args);
+    if ("error" in pg) return refused(pg.error);
+    const ceiling = ctx.vectors.maxTopK;
     let hits;
     try {
       const vec = await ctx.embeddings.embed(query);
-      // Over-fetch, then drop inactive, so filtering doesn't shrink below what the model asked.
-      hits = await ctx.vectors.query(vec, HARD_CAP);
+      // Ask for as many as the index can rank; inactive facts are dropped after.
+      hits = await ctx.vectors.query(vec, ceiling ?? Number.MAX_SAFE_INTEGER);
     } catch (e) {
-      return { ok: false, status: "error", message: `Meaning search is unavailable: ${(e as Error).message}. Try history_search.` };
+      return { ok: false, status: "error", message: `Meaning search is unavailable: ${(e as Error).message}. Try memory_list or history_search.` };
     }
-    const results: unknown[] = [];
+    const active: unknown[] = [];
     let droppedInactive = 0;
     for (const h of hits) {
       const f = await ctx.facts.get(h.id);
@@ -389,19 +411,73 @@ export const memorySearch: Tool = {
         droppedInactive += 1;
         continue;
       }
-      if (results.length < topK) {
-        results.push({ id: f.id, text: f.text, kind: f.kind, confidence: f.confidence, createdAt: f.createdAt, score: h.score });
-      }
+      active.push({ id: f.id, text: f.text, kind: f.kind, confidence: f.confidence, createdAt: f.createdAt, pinned: f.pinned, score: h.score });
     }
+    const page = active.slice(pg.offset, pg.limit === undefined ? undefined : pg.offset + pg.limit);
+    const nextOffset = pg.offset + page.length < active.length ? pg.offset + page.length : null;
     const { total: notYetIndexed } = await ctx.facts.unindexedActive(0);
     return {
       ok: true,
       status: "ok",
       data: {
-        results,
+        results: page,
+        totalMatches: active.length,
+        nextOffset,
         droppedInactive,
         notYetIndexed,
-        ...(requested > HARD_CAP ? { cappedAt: HARD_CAP, requested } : {}),
+        ...(ceiling !== undefined && hits.length >= ceiling ? { indexCeiling: ceiling } : {}),
+      },
+    };
+  },
+};
+
+export const memoryList: Tool = {
+  name: "memory_list",
+  description:
+    "Read what you remember directly, no search query: every active fact, oldest first. Optional " +
+    "filters: kind ('durable' or 'temporary'), pinned (true/false). include_inactive: true also " +
+    "returns hidden (forgotten), expired and outdated (corrected) versions, each labelled with its " +
+    "status. limit/offset are optional — leave limit out to get everything.",
+  parameters: {
+    type: "object",
+    properties: {
+      kind: { type: "string", enum: ["durable", "temporary"] },
+      pinned: { type: "boolean" },
+      include_inactive: { type: "boolean" },
+      ...PAGING_PROPS,
+    },
+  },
+  async run(args, ctx): Promise<ToolResult> {
+    const pg = paging(args);
+    if ("error" in pg) return refused(pg.error);
+    if (args.kind !== undefined && args.kind !== "durable" && args.kind !== "temporary") {
+      return refused(`kind must be durable or temporary: ${JSON.stringify(args.kind)}`);
+    }
+    if (args.pinned !== undefined && typeof args.pinned !== "boolean") return refused("pinned must be true or false.");
+    if (args.include_inactive !== undefined && typeof args.include_inactive !== "boolean") {
+      return refused("include_inactive must be true or false.");
+    }
+    const source = args.include_inactive === true ? await ctx.facts.all() : await ctx.facts.activeFacts();
+    const matches = source.filter(
+      (f) => (args.kind === undefined || f.kind === args.kind) && (args.pinned === undefined || f.pinned === args.pinned),
+    );
+    const page = matches.slice(pg.offset, pg.limit === undefined ? undefined : pg.offset + pg.limit);
+    return {
+      ok: true,
+      status: "ok",
+      data: {
+        results: page.map((f) => ({
+          id: f.id,
+          text: f.text,
+          kind: f.kind,
+          confidence: f.confidence,
+          pinned: f.pinned,
+          createdAt: f.createdAt,
+          expiresAt: f.expiresAt,
+          status: factStatus(f, ctx),
+        })),
+        total: matches.length,
+        nextOffset: pg.offset + page.length < matches.length ? pg.offset + page.length : null,
       },
     };
   },
@@ -414,10 +490,10 @@ export const historySearch: Tool = {
     "Sid's words and yours — including messages older summaries replaced in your context. Use it " +
     "for exact wording ('what did I say about the dentist?') or to find a message id to cite. " +
     "query: text to find (case-insensitive). since/until: optional RFC3339 bounds. channel: " +
-    "optional 'text' or 'voice' (voice = phone calls). limit: how many matches you want, newest " +
-    "first — required, you choose. Results carry ids (msg_...) usable as source_message_id. The " +
-    "result reports totalMatches and coverage (how many messages are stored and since when), so " +
-    "'no match' can be told apart from 'not stored'.",
+    "optional 'text' or 'voice' (voice = phone calls). Newest first. limit/offset are optional — " +
+    "leave limit out to get every match. Results carry ids (msg_...) usable as source_message_id. " +
+    "The result reports totalMatches, nextOffset and coverage (how many messages are stored and " +
+    "since when), so 'no match' can be told apart from 'not stored'.",
   parameters: {
     type: "object",
     properties: {
@@ -425,16 +501,17 @@ export const historySearch: Tool = {
       since: { type: "string", description: "Optional RFC3339 lower bound (inclusive)." },
       until: { type: "string", description: "Optional RFC3339 upper bound (inclusive)." },
       channel: { type: "string", enum: CHANNELS, description: "Optional: text or voice." },
-      limit: { type: "number", description: "How many matches you want. Required; you choose." },
+      ...PAGING_PROPS,
     },
-    required: ["query", "limit"],
+    required: ["query"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const query = String(args.query ?? "");
     if (query.trim() === "") return refused("query is required.");
-    const requested = modelLimit(args.limit);
-    if (requested === null) return refused("limit is required: a whole number of matches you want. Not defaulted.");
-    const q: import("../conversation/conversation-repo.js").HistoryQuery = { query, limit: 0 };
+    const pg = paging(args);
+    if ("error" in pg) return refused(pg.error);
+    const q: import("../conversation/conversation-repo.js").HistoryQuery = { query, offset: pg.offset };
+    if (pg.limit !== undefined) q.limit = pg.limit;
     if (args.since !== undefined) {
       const since = realInstant(args.since);
       if (!since) return refused(`since is not a real date: ${JSON.stringify(args.since)}`);
@@ -450,9 +527,8 @@ export const historySearch: Tool = {
       if (!CHANNELS.includes(args.channel as Channel)) return badEnum("channel", args.channel, CHANNELS);
       q.channel = args.channel as Channel;
     }
-    const HARD_CAP = 200; // system protection; reported when it bites
-    q.limit = Math.min(requested, HARD_CAP);
     const r = await ctx.conversation.search(q);
+    const shown = pg.offset + r.results.length;
     return {
       ok: true,
       status: "ok",
@@ -466,8 +542,8 @@ export const historySearch: Tool = {
           ...(m.forwarded ? { forwarded: true } : {}),
         })),
         totalMatches: r.totalMatches,
+        nextOffset: shown < r.totalMatches ? shown : null,
         coverage: { storedMessages: r.storedMessages, earliestStored: r.earliestStored },
-        ...(requested > HARD_CAP ? { cappedAt: HARD_CAP, requested } : {}),
       },
     };
   },
@@ -483,5 +559,6 @@ export const memoryTools: Tool[] = [
   memoryUnpin,
   memoryExplain,
   memorySearch,
+  memoryList,
   historySearch,
 ];

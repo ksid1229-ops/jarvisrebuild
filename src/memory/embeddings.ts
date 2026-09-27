@@ -63,6 +63,8 @@ export interface VectorIndex {
   remove(id: string): Promise<void>;
   /** Return topK nearest ids with scores, highest first. */
   query(vector: number[], topK: number): Promise<VectorHit[]>;
+  /** The most results one query can rank (a platform limit), if any. */
+  readonly maxTopK?: number;
 }
 
 export class InMemoryVectorIndex implements VectorIndex {
@@ -102,6 +104,7 @@ export interface VectorizeLike {
 export class CloudflareVectorizeIndex implements VectorIndex {
   /** Vectorize's own topK ceiling when values/metadata are not returned. */
   static readonly MAX_TOP_K = 100;
+  readonly maxTopK = CloudflareVectorizeIndex.MAX_TOP_K;
   constructor(private readonly index: VectorizeLike) {}
   async upsert(id: string, vector: number[]): Promise<void> {
     await this.index.upsert([{ id, values: vector }]);

@@ -5,12 +5,14 @@
  */
 import { describe, expect, it } from "vitest";
 import { FixedClock } from "../src/clock.js";
+import { buildVaultExport } from "../src/plumbing/vault.js";
 import { canonical } from "../src/school/canonical.js";
 import { parseSchoolBatch } from "../src/school/collector-protocol.js";
 import { diffExtracted, extractEvidence } from "../src/school/evidence-items.js";
 import { COLLECTOR_ENVELOPE_HEADER, handleSchoolRequest, type SchoolRouteDeps } from "../src/school/routes.js";
 import {
   schoolChangesSince,
+  schoolVaultSnapshot,
   schoolCollectorApprove,
   schoolCollectorRevoke,
   schoolD2lStatus,
@@ -419,6 +421,60 @@ describe("school tools", () => {
     expect(only.every((c) => c.kind === "due_date")).toBe(true);
     const bad = await schoolChangesSince.run({ since: "not-a-date" }, ctx);
     expect(bad.ok).toBe(false);
+  });
+
+  it("changes_since sees a change even when many batches came after it (no 10-batch window)", async () => {
+    const clock = new FixedClock("2026-09-26T19:00:00.000Z");
+    const deps = depsFor(clock);
+    const h = makeHarness([], { clock, db: deps.db });
+    const device = await startPairing(deps);
+    await deps.db.prepare(`UPDATE school_collector_keys SET status = 'active' WHERE collector_id = ?`)
+      .bind(device.collectorId).run();
+    const post = async (batch: Record<string, unknown>): Promise<void> => {
+      clock.advance(60 * 1000);
+      const res = await signed(deps, "/school/observations", device.keys, device.collectorId, canonical(batch), clock.nowIso());
+      if (res.status !== 200) throw new Error(`post failed: ${JSON.stringify(res.body)}`);
+    };
+    await post(fixtureBatch("base"));
+    const since = clock.nowIso();
+    // Two successive moves, then a busy stretch of identical batches: both moves must be reported,
+    // not just "base → final" (which is all a newest-10 window can see).
+    await post(fixtureBatch("moved-1", { due: "2026-09-26T03:59:00.000Z" }));
+    await post(fixtureBatch("moved-2", { due: "2026-10-03T03:59:00.000Z" }));
+    for (let i = 0; i < 12; i++) await post(fixtureBatch(`same-${i}`, { due: "2026-10-03T03:59:00.000Z" }));
+    const res = await schoolChangesSince.run({ since }, h.ctxFor(ownerEvent("what changed?")));
+    const changes = (res.data as Record<string, unknown[]>).changes as Record<string, unknown>[];
+    const dueMoves = changes.filter((c) => c.kind === "due_date");
+    expect(dueMoves.map((c) => c.newValue)).toEqual(expect.arrayContaining(["2026-09-26T03:59:00.000Z", "2026-10-03T03:59:00.000Z"]));
+    // A baseline existed, so nothing is misreported as "first evidence".
+    expect(changes.some((c) => String(c.summary).startsWith("First evidence"))).toBe(false);
+  });
+
+  it("snapshot: no limit = everything; a limit is honoured and reported; a bad limit is refused", async () => {
+    const { h } = await twoBatches();
+    const ctx = h.ctxFor(ownerEvent("everything"));
+    const all = (await schoolSnapshotRead.run({ include_completed: true }, ctx)).data as Record<string, unknown>;
+    expect((all.items as unknown[]).length).toBe(all.total);
+    expect(all.truncated).toBe(false);
+    const one = (await schoolSnapshotRead.run({ include_completed: true, limit: 1 }, ctx)).data as Record<string, unknown>;
+    expect(one.items as unknown[]).toHaveLength(1);
+    expect(one.truncated).toBe(true);
+    expect((await schoolSnapshotRead.run({ limit: 0 }, ctx)).status).toBe("refused");
+  });
+
+  it("the vault export includes school items and grades with their freshness", async () => {
+    const { h } = await twoBatches();
+    const snap = await schoolVaultSnapshot(h.school!.evidence, new Date(h.clock.nowMs()));
+    const exported = buildVaultExport([], [], { school: snap });
+    const paths = exported.notes.map((n) => n.path);
+    expect(paths).toContain("jarvis/school/courses.md");
+    expect(paths.some((p) => p.startsWith("jarvis/school/items/"))).toBe(true);
+    expect(paths.some((p) => p.startsWith("jarvis/school/grades/"))).toBe(true);
+    expect(paths.every((p) => /^[A-Za-z0-9._\/-]+$/.test(p))).toBe(true); // filename-safe
+    const item = exported.notes.find((n) => n.path.startsWith("jarvis/school/items/"))!;
+    expect(item.markdown).toContain("evidence_as_of:");
+    expect(item.markdown).toMatch(/due_at: (\d{4}-|unknown)/);
+    expect(exported.count).toBe(exported.notes.length);
   });
 
   it("queues sync/open requests, validates URLs, and reports status", async () => {

@@ -41,10 +41,18 @@ function boolArg(args: Record<string, unknown>, name: string, fallback: boolean)
   return typeof v === "boolean" ? v : fallback;
 }
 
-function limitArg(args: Record<string, unknown>, fallback: number, max: number): number {
-  const v = args.num ?? args.limit;
-  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
-  return Math.max(1, Math.min(max, Math.floor(v)));
+/**
+ * Optional result limit. Sid (2026-09-26): "Jarvis should get as much as he
+ * needs" — so there is no default count and no ceiling: omitted = everything.
+ * A value that is not a whole number >= 1 is refused, never silently replaced.
+ */
+function limitArg(args: Record<string, unknown>): { limit?: number } | { error: string } {
+  const v = args.limit;
+  if (v === undefined || v === null) return {};
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 1) {
+    return { error: `limit must be a whole number of at least 1 (or leave it out for everything): ${JSON.stringify(v)}` };
+  }
+  return { limit: Math.floor(v) };
 }
 
 function strArrayArg(args: Record<string, unknown>, name: string): string[] | undefined {
@@ -63,6 +71,31 @@ function decoded(row: EvidenceRow, now: Date): SchoolObservationBatch | null {
 }
 
 const COMPLETED = new Set(["submitted", "graded"]);
+
+/** The school part of the vault export: latest good evidence per course, extracted. */
+export interface SchoolVaultSnapshot {
+  courses: { courseId: string | null; courseName: string | null; host: string; evidenceAsOf: string }[];
+  items: SchoolItem[];
+  grades: import("./evidence-items.js").SchoolGrade[];
+  /** Stored batches that could not be decoded (reported, never silently skipped). */
+  unreadable: number;
+}
+
+export async function schoolVaultSnapshot(evidence: EvidenceStore, now: Date): Promise<SchoolVaultSnapshot> {
+  const out: SchoolVaultSnapshot = { courses: [], items: [], grades: [], unreadable: 0 };
+  for (const row of await evidence.latestGoodPerCourse()) {
+    out.courses.push({ courseId: row.courseId, courseName: row.courseName, host: row.host, evidenceAsOf: row.receivedAt });
+    const batch = decoded(row, now);
+    if (!batch) {
+      out.unreadable += 1;
+      continue;
+    }
+    const ext = extractEvidence(batch);
+    out.items.push(...ext.items);
+    out.grades.push(...ext.grades);
+  }
+  return out;
+}
 
 export const schoolSnapshotRead: Tool = {
   name: "school_snapshot_read",
@@ -109,7 +142,9 @@ export const schoolSnapshotRead: Tool = {
     const dueAfter = strArg(args, "due_after");
     const includeUndated = boolArg(args, "include_undated", true);
     const includeCompleted = boolArg(args, "include_completed", false);
-    const limit = limitArg(args, 50, 200);
+    const lim = limitArg(args);
+    if ("error" in lim) return { ok: false, status: "refused", message: lim.error };
+    const limit = lim.limit ?? Number.POSITIVE_INFINITY;
 
     const items: SchoolItem[] = [];
     const grades: unknown[] = [];
@@ -189,7 +224,8 @@ export const schoolChangesSince: Tool = {
     const courseId = strArg(args, "course_id");
     const kinds = strArrayArg(args, "kinds");
     const includeReadFailures = boolArg(args, "include_read_failures", true);
-    const limit = limitArg(args, 50, 200);
+    const lim = limitArg(args);
+    if ("error" in lim) return { ok: false, status: "refused", message: lim.error };
 
     const changes: (ItemChange & { batchReceivedAt: string })[] = [];
     const readGaps: unknown[] = [];
@@ -197,7 +233,7 @@ export const schoolChangesSince: Tool = {
     for (const row of latest) {
       if (courseId && row.courseId !== courseId) continue;
       if (!row.courseId) continue;
-      const history = await svc.evidence.historyForCourse(row.host, row.courseId, 10);
+      const { rows: history, hasBaseline } = await svc.evidence.historyForCourseSince(row.host, row.courseId, since);
       const goods = history.filter((h) => h.outcome === "good");
       if (includeReadFailures) {
         for (const h of history) {
@@ -218,8 +254,10 @@ export const schoolChangesSince: Tool = {
         if (newer === undefined || older === undefined) continue;
         if (newer.receivedAt > since) pairs.push([older, newer]);
       }
-      // A first-ever batch in the window reports everything as new.
-      const oldestInWindow = pairs.length === 0 ? goods.find((g) => g.receivedAt > since) : undefined;
+      // With no good batch before the window, the oldest good batch in it is the
+      // first evidence ever seen for this course: everything in it is new.
+      const inWindow = goods.filter((g) => g.receivedAt > since);
+      const oldestInWindow = !hasBaseline ? inWindow[inWindow.length - 1] : undefined;
       if (oldestInWindow) {
         const batch = decoded(oldestInWindow, now);
         if (batch) {
@@ -260,8 +298,8 @@ export const schoolChangesSince: Tool = {
     return {
       ok: true, status: "ok",
       data: {
-        changes: filtered.slice(0, limit), readGaps,
-        truncated: filtered.length > limit, total: filtered.length,
+        changes: lim.limit === undefined ? filtered : filtered.slice(0, lim.limit), readGaps,
+        truncated: lim.limit !== undefined && filtered.length > lim.limit, total: filtered.length,
       },
     };
   },
