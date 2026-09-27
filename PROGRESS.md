@@ -1,11 +1,23 @@
 # Jarvis rebuild — PROGRESS
 
-**All 7 phases built and tested** (Phases 1, 2, 3, 5, 6, 7 complete; Phase 4 confirmation/shadow/
-receipts core complete — that is the whole of Phase 4's code scope).
-**Connector buildout in progress (Sid approved):** school protocol ported (22 tests) +
-D1 persistence for ALL stores, wired into the production DO (8 persistence tests) +
-school routes + pairing approval + 7 school tools served from evidence (14 tests).
-103/103 green, tsc clean, school app untouched at 231/231.
+**Status (2026-09-26, session arena/01a0e025):** all 7 phases' feature code + D1 persistence +
+school receiver/pull channel + **memory hardening** (this session). **139/139 tests green**,
+`tsc --noEmit` clean, school app untouched (231→238 tests in `apps/school-helper`, not re-run
+this session — no files there changed).
+
+**Exact next step:** rebuild the connectors that were reported done but NEVER PUSHED (see
+"Lost work" below): Cloudflare email in (school@onesid.ca) + Gmail API / MS Graph out, Twilio
+REST + the ConversationRelay WebSocket loop on the DO, and the Windows PC agent. Nothing here is
+deployed; Sid does production deploys.
+
+### Lost work (verified from git, not memory)
+
+The previous session's final report claimed a commit with email in/out, Twilio REST, the
+ConversationRelay WebSocket loop, the PC agent app, a Vectorize adapter and migration 0003, with
+"363 tests". **That commit never reached GitHub.** `git ls-remote` shows the old session branch
+`arena/01a0dfb2-jarvisrebuild` ending at `930a2c4` (school app fix); none of those files exist on
+any branch. This session started from `930a2c4` (105 tests). The Vectorize adapter was rebuilt
+this session; email, Twilio REST/WS and the PC agent still need rebuilding.
 
 **Sid's locked answers (2026-09-26, via popup):**
 - spend_money = browser autofill: Jarvis drives the checkout, clicks his saved card ending
@@ -14,29 +26,18 @@ school routes + pairing approval + 7 school tools served from evidence (14 tests
   Receipts still log everything (Proof is architecture, not a restriction).
 - Outbound email = his real accounts, model picks by recipient unless told: Gmail API for
   ksid1229@gmail.com, Microsoft Graph for sk7qq09@limestone.on.ca (MX proves M365).
-  Passwords/tokens stored as deploy secrets, redacted from logs, visible to Sid on request.
 - PC offline = QUEUE: record it, say it's queued, run it when the PC checks in.
-
-**Exact next step:** school-app fix (issuedAt to ISO, base URL, pull client, 4 parser bugs,
-grade-objects evidence route). Then in order: pull channel both sides, email in/out
-(Cloudflare in, Gmail API + MS Graph out), Twilio REST + ConversationRelay WS loop,
-Vectorize index, PC agent app.
-
-**Voice runtime note:** the `/voice` webhook (Twilio signature verified, returns ConversationRelay
-TwiML) and the caller-id/PIN/guest logic are built and unit-tested. The DO WebSocket loop that
-streams call turns is the one piece not wired end-to-end in the sandbox (no Twilio).
 
 ---
 
 ## How to run the tests
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 npm install
 npm test
+npm run typecheck
 ```
-
-103 tests pass (`vitest`). `npm run typecheck` (`tsc --noEmit`) is clean.
 
 ---
 
@@ -221,18 +222,41 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 
 ## What is faked, and why
 
-- **DeepSeek model** — no API key in the sandbox. Tests use a *scripted* FakeModel that plays a queue
-  of responses; it never reads Sid's words with keywords. The real `DeepSeekModel` is written and
-  type-checked but not run here. No keyword fallback exists: with no key, construction throws.
-- **Embeddings / Vectorize** — Workers AI + Vectorize don't run in the sandbox. A deterministic
-  bag-of-words embedding + in-memory cosine index stand in. It proves the recall PATH (index → search
-  → drop hidden/expired), not real semantic quality. `WorkersAiEmbeddingProvider` is the production swap-in.
-- **D1 / R2 / Queues / Durable Object storage** — not run in the sandbox. Logic is tested against
-  in-memory repositories that mirror `migrations/0001_init.sql`. **Known limit:** the DO keeps state
-  for its lifetime but is not yet persisted across evictions; a D1/DO-storage adapter is the next
-  plumbing step (Phase 7 territory, noted here so it isn't mistaken for done).
-- **Telegram / Twilio** — no real credentials. `TelegramChannel` is real code but unrun; the
-  `FakeOwnerChannel` is used in tests and can simulate a failed send.
+- **DeepSeek model** — no API key in the sandbox. Tests use a scripted FakeModel. The real
+  `DeepSeekModel` is written and type-checked but never called here. No keyword fallback exists.
+- **Workers AI / Vectorize** — cannot run in the sandbox. `WorkersAiEmbeddingProvider` and
+  `CloudflareVectorizeIndex` are tested only against fakes shaped like the bindings. Tests use a
+  bag-of-words embedding that proves the recall PATH, not semantic quality. The Worker never uses
+  that fake: without the AI binding it uses `UnavailableEmbeddingProvider` (fails loudly).
+- **D1** — tested against real SQLite (sql.js) running the real migration files 0001–0003. Not
+  run against Cloudflare's D1 itself.
+- **R2** — `R2BucketAdapter` tested against a paging fake of the R2 list API; not real R2.
+- **Durable Object alarm** — `alarm()` + `storage.setAlarm` are wired in `src/index.ts`, which
+  has no test harness (no Miniflare here). The alarm's logic (`fireDue` + `fireWakeup`) is tested.
+- **Telegram / Twilio** — no credentials. `TelegramChannel` is real code, unrun.
+
+## Honesty audit (against the brief's mandatory rules)
+
+- No fake success: the five actions return `not_connected`.
+- Fail closed: webhook refuses with no secret; owner refuses with no OWNER_CHAT_ID; model throws with no key.
+- Code never reads Sid's words to decide.
+- No silent drops: empty reply, model error, failed send, empty summary, failed archive write,
+  failed wake-up, failed memory review, and un-indexed facts are each recorded and surfaced.
+- No keyword fallback pretending to be the model (and none pretending to be the embedder).
+- Tool-count: the full catalogue is sent to the model.
+
+## Not yet built (be honest with Sid)
+
+- Email in (Cloudflare Email Worker for school@onesid.ca) and out (Gmail API / MS Graph). Lost; to rebuild.
+- Twilio REST (outbound call/SMS) and the ConversationRelay WebSocket loop on the DO. Lost; to rebuild.
+  The `/voice` webhook, signature check, TwiML, PIN and guest logic exist and are tested.
+- Windows PC agent (`apps/pc-agent`) incl. vault sync script. Lost; to rebuild.
+- The five action tools are wired to NO real provider — each returns `not_connected`.
+- `/vault/export` still reads `facts.all()` (includes hidden/superseded versions); decide with Sid
+  whether forgotten facts belong in his Obsidian vault.
+- Nothing is deployed.
+
+---
 
 ## Honesty audit (against the brief's mandatory rules)
 
@@ -255,7 +279,7 @@ All seven phases' feature code is built and tested. What remains is deploy-side 
 
 ---
 
-## Signature
+## Signature (previous session)
 
 Built by:
 - Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; underlying model not disclosed to me for signing)
@@ -312,3 +336,82 @@ Verification: root `tsc` clean, `vitest` 105/105; app `tsc` clean, `vitest` 238/
 Repo note: this branch's history is `18b0570` (PR #1 school app) -> `6a34ccf`
 (collector protocol) -> `3f1bc3a` (D1 persistence) -> `5bd2f20` (school routes +
 pairing + tools) -> this increment.
+
+---
+
+## Session: memory hardening (2026-09-26, branch arena/01a0e025-jarvisrebuild)
+
+Triggered by the main-repo builder's review of the memory report (false present-tense claims:
+"zero data loss across evictions", Vectorize live, history_search date_range). Reading the code
+found worse problems than the review listed; all fixed and tested here.
+
+**Bugs found in the code (proven by reading it, then by tests):**
+1. Summarizing DELETED old messages from D1, and `ArchiveService.append` was never called
+   anywhere — so after ~40 messages, conversation was gone for good except the model's summary.
+2. The DO used `InMemoryVectorIndex` even with Vectorize bound (meaning search empty after every
+   eviction) and silently fell back to the bag-of-words fake when Workers AI was missing.
+3. Archive and backups used an in-memory bucket in production (R2 never wired); the backup
+   skipped the `messages` table and exported `pending_actions` as `[]`.
+4. The DO had no `alarm()` handler and `setAlarm` was a no-op, so wake-ups fired only on the
+   hourly cron (up to 59 min late). A wake-up whose model call failed was removed anyway.
+5. No quiet-conversation memory review existed; the hourly cron never asked for a memory review.
+6. `MEMORY_EXTRACTION_MODEL` was declared but never read.
+7. `memory_correct` let a "stated" correction skip the quote check, discarded its required
+   `reason`, copied the OLD fact's source onto the new version, and could fork the chain by
+   correcting an outdated version.
+8. During any wake-up, a "stated" save could never pass provenance (the quote was checked against
+   the wake-up text), and forwarded messages were accepted as Sid's own words.
+9. `R2BucketAdapter.list` ignored R2's 1000-key paging (silent truncation).
+10. `WATCHDOG_PING_URL` was never wired, so the watchdog was always `not_connected` in production.
+
+**What changed (file → one line):**
+- `migrations/0003_memory_hardening.sql` — messages.rolled_up/forwarded/source_ref; facts.source_message_id/correction_reason/indexed; memory_runs; wakeups.kind. **Apply before deploying this code.**
+- `src/conversation/conversation-repo.ts` — context view vs record; summaries roll up, never delete; `search` (since/until/channel/limit, totals, coverage); `since` (review windows, cap never splits an instant).
+- `src/memory/provenance.ts` — `resolveStatedSource`: a stated fact must quote one real, non-forwarded message of Sid's (live turn, or cited `source_message_id`).
+- `src/memory/facts-repo.ts` — `correct(id, input)` with reason + own provenance; refuses outdated versions (D1: guarded UPDATE); `markIndexed`/`unindexedActive`; D1 reads re-checked by `factIsActive`.
+- `src/memory/memory-tools.ts` — tools above; `limit` required on both searches (model chooses, never defaulted); memory_search reports `notYetIndexed`; memory_explain shows status, reason and the quoted source message; index failures reported, not thrown.
+- `src/memory/memory-review.ts` — `memory_runs` ledger (in-memory + D1), cursor advances only on success, `MemoryReviewer` hands the model the unreviewed messages with ids.
+- `src/memory/embeddings.ts` — `CloudflareVectorizeIndex`, `UnavailableEmbeddingProvider`, `reindexUnindexed`.
+- `src/jarvis/agent-core.ts` — stores provenance per message, `currentMessageId` for tools, archives every message, arms the quiet-review timer, returns per-tool outcomes, model override for reviews, empty summaries logged.
+- `src/scheduler/*` — wake-up kinds, debounced system timer, `fireDue` keeps failed wake-ups (5-min retry floor), shared `fireWakeup`, hourly cron runs review + re-index.
+- `src/plumbing/{archive,bucket,backup}.ts` — one R2 object per message; paginated R2 list; `BackupService.fromD1` dumps every table.
+- `src/index.ts` — Vectorize, R2, D1 memory runs, extraction model, watchdog URL, `alarm()` + `storage.setAlarm`.
+
+**Decisions not in the brief (flagged for Sid):**
+- Quiet period before a memory review: **20 minutes** (`MEMORY_REVIEW_QUIET_MS`). A wake-up cadence, not a judgment; change it if reviews feel too eager/late.
+- Review window cap: 200 messages; per-message 4000 chars in the review prompt (full text via history_search). Both reported when they bite.
+- `limit` is now REQUIRED on memory_search and history_search (was defaulted to 10 / hard 50).
+- `memory_forget` hides the fact, not the conversation it came from; the tool tells the model to say so.
+
+**Tests:** 139/139 (was 105). New suite `test/memory-hardening.test.ts` (34 tests), D1 ones on real SQLite with migrations 0001–0003.
+
+**Mutation checks this session (each planted fault → a test went red → restored):**
+
+| Guard | Planted fault | Result |
+|---|---|---|
+| summary never deletes (D1) | `UPDATE … rolled_up = 1` → `DELETE` | red |
+| forwarded ≠ Sid's words | skipped the isForwarded check | red |
+| stated needs a verified quote | skipped the stated branch | red (4) |
+| review cursor only on success | counted error runs (in-memory) | red |
+| review cursor only on success (D1) | `status IN ('ok','error')` | red |
+| cap never skips an instant | fallback → `slice(0, cap)` | red (2) |
+| failed wake-up kept | dropped the `continue` | red |
+| R2 pagination | returned after page 1 | red |
+| archive written | archive() early-return | red (2) |
+| one quiet timer | removed `removeKind` | red |
+| no forked correction chains | removed superseded check | red |
+| owner wake-up errors retried | removed the throw | red |
+| history sees rolled-up messages | filtered `rolledUp` out | red (2) |
+
+The quiet-review mutation sweep found one real bug in my own first version (cap fallback could
+skip messages sharing an instant forever); fixed and pinned by two tests before commit.
+
+## Signature (this session)
+
+Built by:
+- Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; not disclosed for signing)
+- Company that made you: UNKNOWN
+- Reasoning / effort level (if known): UNKNOWN
+- Knowledge cutoff: UNKNOWN
+- Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
+- Phases completed this session: none new; memory hardening across Phases 2, 6 and 7 (conversation never deleted, provenance, corrections, history_search, memory reviews + extraction model, Vectorize/R2/alarm wiring, full backup)

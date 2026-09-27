@@ -14,7 +14,7 @@ export interface Harness extends BuiltJarvis {
   vectors: InMemoryVectorIndex;
   embeddings: FakeEmbeddingProvider;
   ownerChannel: FakeOwnerChannel;
-  ctxFor(event: JarvisEvent): ToolContext;
+  ctxFor(event: JarvisEvent, currentMessageId?: string): ToolContext;
 }
 
 export function makeHarness(
@@ -25,11 +25,16 @@ export function makeHarness(
     ownerPin?: string;
     pinPepper?: string;
     db?: import("../src/persistence/d1.js").D1Db;
+    extractionModel?: import("../src/model/types.js").Model;
+    bucket?: import("../src/plumbing/bucket.js").Bucket;
+    embeddings?: import("../src/memory/embeddings.js").EmbeddingProvider;
+    stores?: import("../src/jarvis/build.js").BuildInput["stores"];
+    setAlarm?: import("../src/scheduler/wakeup-scheduler.js").SetAlarm;
   } = {},
 ): Harness {
   const clock = opts.clock ?? new FixedClock();
   const model = new FakeModel(turns);
-  const embeddings = new FakeEmbeddingProvider();
+  const embeddings = (opts.embeddings ?? new FakeEmbeddingProvider()) as FakeEmbeddingProvider;
   const vectors = new InMemoryVectorIndex();
   const ownerChannel = new FakeOwnerChannel();
   const built = buildJarvis({
@@ -44,6 +49,10 @@ export function makeHarness(
     ...(opts.ownerPin ? { ownerPin: opts.ownerPin } : {}),
     ...(opts.pinPepper ? { pinPepper: opts.pinPepper } : {}),
     ...(opts.db ? { db: opts.db } : {}),
+    ...(opts.extractionModel ? { extractionModel: opts.extractionModel } : {}),
+    ...(opts.bucket ? { bucket: opts.bucket } : {}),
+    ...(opts.stores ? { stores: opts.stores } : {}),
+    ...(opts.setAlarm ? { setAlarm: opts.setAlarm } : {}),
   });
   return {
     ...built,
@@ -52,8 +61,9 @@ export function makeHarness(
     embeddings,
     vectors,
     ownerChannel,
-    ctxFor(event: JarvisEvent): ToolContext {
+    ctxFor(event: JarvisEvent, currentMessageId?: string): ToolContext {
       return {
+        ...(currentMessageId ? { currentMessageId } : {}),
         clock,
         ownerId: "sid",
         provenance: event.provenance,

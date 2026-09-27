@@ -90,16 +90,18 @@ function bounds(q: HistoryQuery): { from: number; to: number } {
 }
 
 /**
- * Cap a review window without splitting a timestamp: the cursor is a timestamp,
- * so if the cap falls between two messages sharing one instant, the shared
- * instant moves wholly to the next run instead of being skipped forever.
+ * Cap a review window without splitting a timestamp. The cursor is a timestamp,
+ * so if the cap falls between two messages sharing one instant, that whole
+ * instant moves to the next run. If the window would then be EMPTY (every
+ * message up to the cap shares one instant), the window instead grows past the
+ * cap to cover that whole instant — otherwise those messages would be skipped
+ * forever. `after` must hold every message through the cap's instant.
  */
 function capWindow(after: StoredMessage[], cap: number): ReviewWindow {
   if (after.length <= cap) return { messages: after, deferred: 0 };
-  let included = after.slice(0, cap);
-  const firstDeferred = after[cap]!;
-  const trimmed = included.filter((m) => m.createdAt !== firstDeferred.createdAt);
-  if (trimmed.length > 0) included = trimmed;
+  const boundary = after[cap]!.createdAt;
+  let included = after.slice(0, cap).filter((m) => m.createdAt !== boundary);
+  if (included.length === 0) included = after.filter((m) => m.createdAt <= boundary);
   return { messages: included, deferred: after.length - included.length };
 }
 
@@ -296,7 +298,16 @@ export class D1ConversationRepo implements ConversationStore {
       .prepare(`SELECT COUNT(*) AS n FROM messages WHERE ${cond}`)
       .bind(...params)
       .first<D1Row>();
-    const fetched = rows.results.map(rowToMessage);
+    let fetched = rows.results.map(rowToMessage);
+    if (fetched.length > cap && fetched.every((m) => m.createdAt === fetched[0]!.createdAt)) {
+      // Rare: more than `cap` messages share one instant. capWindow needs all of them.
+      const instant = fetched[0]!.createdAt;
+      const same = await this.db
+        .prepare(`SELECT * FROM messages WHERE ${cond} AND created_at <= ? ORDER BY created_at ASC, rowid ASC`)
+        .bind(...params, instant)
+        .all<D1Row>();
+      fetched = same.results.map(rowToMessage);
+    }
     const win = capWindow(fetched, cap);
     return { messages: win.messages, deferred: num(total?.n, "count") - win.messages.length };
   }

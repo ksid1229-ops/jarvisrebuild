@@ -1,6 +1,6 @@
 # Jarvis rebuild (agent-1)
 
-A clean, isolated rebuild of Jarvis, living entirely under `rebuild/`. Cloudflare Workers +
+A clean rebuild of Jarvis. Cloudflare Workers +
 Durable Objects + D1 + R2 + Vectorize + Queues. One brain (the Durable Object) that text and
 voice both call. See `PROGRESS.md` for exactly what is built vs. faked vs. not-yet-built.
 
@@ -9,7 +9,7 @@ Everything below is **Windows PowerShell** (Sid runs Windows 11; there is no Lin
 ## Run the tests (your PC)
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 npm install
 npm test
 ```
@@ -17,7 +17,7 @@ npm test
 Type-check:
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 npm run typecheck
 ```
 
@@ -29,10 +29,10 @@ You need Node 18+ and the Cloudflare CLI. Install wrangler once:
 npm install -g wrangler
 ```
 
-Then, from the rebuild folder:
+Then, from the repo folder:
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 wrangler dev
 ```
 
@@ -44,7 +44,7 @@ health is `GET /health`.
 Set each secret with wrangler. Run these one at a time; each prompts for the value:
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put TELEGRAM_WEBHOOK_SECRET
 wrangler secret put DEEPSEEK_API_KEY
@@ -77,31 +77,50 @@ Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$token/setWebho
 
 ## Deploy (you do the production deploys)
 
+One-time setup (PowerShell, from the repo folder). Each `create` prints an id or confirms the name:
+
 ```powershell
-cd rebuild
-wrangler d1 create jarvis          # once; copy the id into wrangler.toml database_id
-wrangler d1 migrations apply jarvis
-wrangler deploy
+cd $HOME\jarvisrebuild
+wrangler d1 create jarvis                     # copy the printed id into wrangler.toml database_id
+wrangler r2 bucket create jarvis-archive
+wrangler r2 bucket create jarvis-backup
+wrangler vectorize create jarvis-memory --dimensions=768 --metric=cosine
 ```
 
-Deploy order matters when a migration changes a table the running code writes: apply the D1
-migration **before** `wrangler deploy` for that release.
+The Vectorize index must be 768 dimensions / cosine: that is what the Workers AI embedding model
+(`@cf/baai/bge-base-en-v1.5`) produces.
+
+Every release, **in this order**:
+
+```powershell
+cd $HOME\jarvisrebuild
+wrangler d1 migrations apply jarvis --remote   # 1. schema first (0003 adds columns the new code writes)
+wrangler deploy                                # 2. then the code
+```
+
+Optional settings:
+
+```powershell
+wrangler secret put WATCHDOG_PING_URL          # your Healthchecks.io ping URL
+```
+
+`MEMORY_EXTRACTION_MODEL` (a `[vars]` entry in `wrangler.toml`) makes memory reviews run on a
+different model. Leave it unset to use the main model.
 
 ## What works today
 
-All seven phases' feature code: text conversations; memory (save/recall/correct/forget/pin, meaning
-+ literal search); connected apps (the plug); calling (same brain on voice, hashed PIN for the five
-actions, guest isolation, Twilio signature + TwiML); the five confirmed actions with enforced
-confirmation and shadow mode; receipts; wake-ups/cron/digest (the model decides digest time and
-content); and plumbing (nightly backup, conversation archive + search, heartbeat, external watchdog,
-token-gated one-way vault export). What remains is deploy-side wiring (real D1/DO/Vectorize/R2
-persistence and the voice WebSocket loop) — see `PROGRESS.md`. The five action tools are **not
-connected to real providers** — they say so rather than pretending.
+See `PROGRESS.md` for the exact, verified list. In short: text conversations, memory (save,
+recall, correct, forget, pin; meaning + literal search; automatic memory reviews when a
+conversation goes quiet and hourly), connected apps, the five confirmed actions with enforced
+confirmation and shadow mode, receipts, wake-ups (Durable Object alarm + hourly cron), backups to
+R2, the conversation archive, and the school receiver. **Not built yet:** email in/out, Twilio
+outbound + the live call WebSocket loop, and the Windows PC agent. The five action tools say
+`not connected` rather than pretending.
 
 The vault export endpoint is `GET /vault/export` with header `x-vault-token`. Set the token:
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 wrangler secret put VAULT_EXPORT_TOKEN
 ```
 
@@ -109,7 +128,7 @@ To connect the phone number after deploy, point your Twilio number's Voice webho
 `https://<your-worker>.workers.dev/voice` (HTTP POST), and set the PIN + phone secrets:
 
 ```powershell
-cd rebuild
+cd $HOME\jarvisrebuild
 wrangler secret put TWILIO_AUTH_TOKEN
 wrangler secret put OWNER_PHONE_E164
 wrangler secret put OWNER_PIN_PEPPER

@@ -20,7 +20,10 @@ export class FakeModel implements Model {
   private readonly turns: ScriptedTurn[];
   public readonly requests: ModelRequest[] = [];
 
-  constructor(turns: ScriptedTurn[]) {
+  constructor(
+    turns: ScriptedTurn[],
+    public readonly name = "fake-model",
+  ) {
     this.turns = [...turns];
   }
 
