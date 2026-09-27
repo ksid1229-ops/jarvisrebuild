@@ -1,5 +1,6 @@
 import type { Tool, ToolContext, ToolResult } from "../jarvis/tool-types.js";
 import { hashPin } from "./pin.js";
+import { verifyOwnerPinOnCall } from "./call-auth.js";
 
 /**
  * pin_verify — the owner enters the 4-digit PIN on a call (spoken or keypad).
@@ -15,30 +16,14 @@ export const pinVerify: Tool = {
     "confirmed actions do.",
   parameters: { type: "object", properties: { pin: { type: "string" } }, required: ["pin"] },
   async run(args, ctx): Promise<ToolResult> {
-    if (!ctx.ownerPinVerifier) {
-      return { ok: false, status: "not_configured", message: "No owner PIN is configured; sensitive actions on a call are refused." };
-    }
     if (ctx.provenance.channel !== "voice" || !ctx.call) {
       return { ok: false, status: "refused", message: "PIN verification only applies on a call." };
     }
-    const ok = await ctx.ownerPinVerifier(String(args.pin ?? ""));
-    if (!ok) {
-      return { ok: false, status: "refused", message: "PIN incorrect." };
-    }
-    ctx.call.pinVerified = true;
-    return { ok: true, status: "ok", message: "PIN verified for this call." };
+    // Shared with the keypad path; counts wrong attempts and locks the call at the limit.
+    return verifyOwnerPinOnCall(ctx.call, String(args.pin ?? ""), ctx.ownerPinVerifier);
   },
 };
 
-/**
- * call_place — Jarvis calls Sid (e.g. a wake-up decided a call beats a text).
- * This reaches the OWNER, so it is not one of the five actions. Not connected to
- * a real provider yet: it says so.
- *
- * Guard noted for when it is wired: there is no answering-machine detection by
- * default, so a voicemail could receive private replies. Outbound owner calls
- * must gate private content on a confirmed human answer before being relied on.
- */
 export const callPlace: Tool = {
   name: "call_place",
   description:

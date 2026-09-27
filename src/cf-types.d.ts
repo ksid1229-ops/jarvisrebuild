@@ -27,3 +27,12 @@ declare interface Vectorize {
 declare interface Ai {
   run(model: string, input: unknown): Promise<unknown>;
 }
+/** The Workers server-side WebSocket (has accept(), unlike the browser one). */
+declare interface CfWebSocket {
+  accept(): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: "message", handler: (event: { data: string | ArrayBuffer }) => void): void;
+  addEventListener(type: "close" | "error", handler: (event: unknown) => void): void;
+}
+declare const WebSocketPair: { new (): { 0: CfWebSocket; 1: CfWebSocket } };

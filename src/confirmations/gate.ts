@@ -126,8 +126,36 @@ export class ToolDispatcher {
    * unexpired, still pending, and not self-confirmed within its own turn.
    */
   async executeConfirmed(pendingId: string, ctx: ToolContext): Promise<ToolResult> {
+    // Every check that can say "not yet" runs BEFORE the action is marked
+    // confirmed. confirm() is a one-way state change: an action marked confirmed
+    // and then refused (e.g. no PIN yet) could never be confirmed again.
+    const peek = await ctx.pending.get(pendingId);
+    if (peek) {
+      // On a call, a confirmed action ALSO requires a verified PIN at this moment.
+      // Caller ID can be spoofed, so identity alone is never enough. Fail closed —
+      // and leave the action pending so Sid can give the PIN and confirm again.
+      if (ctx.provenance.channel === "voice" && !(ctx.call && ctx.call.pinVerified)) {
+        const result: ToolResult = {
+          ok: false,
+          status: "pin_required",
+          message:
+            "This action needs Sid's 4-digit PIN on the call. Ask him to say or key it, then confirm again. " +
+            `The action is still pending (pending_id=${pendingId}).`,
+        };
+        await ctx.receipts.log({ tool: peek.tool, input: { pendingId }, result, trigger: ctx.trigger, performed: false, status: "pin_required" });
+        return result;
+      }
+      if (!this.registry.get(peek.tool)) {
+        const result: ToolResult = { ok: false, status: "error", message: `pending action names unknown tool ${peek.tool}` };
+        await ctx.receipts.log({ tool: peek.tool, input: { pendingId }, result, trigger: ctx.trigger, performed: false, status: "error" });
+        return result;
+      }
+    }
+
     let action;
     try {
+      // The authoritative checks (exists, Sid's, pending, unexpired, not the
+      // same turn) happen here, atomically with the state change.
       action = await ctx.pending.confirm(pendingId, ctx.ownerId, ctx.eventId);
     } catch (e) {
       const result: ToolResult = { ok: false, status: "refused", message: (e as Error).message };
@@ -139,18 +167,6 @@ export class ToolDispatcher {
     if (!tool) {
       const result: ToolResult = { ok: false, status: "error", message: `pending action names unknown tool ${action.tool}` };
       await ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "error" });
-      return result;
-    }
-
-    // On a call, a confirmed action ALSO requires a verified PIN at this moment.
-    // Caller ID can be spoofed, so identity alone is never enough. Fail closed.
-    if (ctx.provenance.channel === "voice" && !(ctx.call && ctx.call.pinVerified)) {
-      const result: ToolResult = {
-        ok: false,
-        status: "pin_required",
-        message: "This action needs Sid's 4-digit PIN on the call. Ask him to say or key it, then confirm again.",
-      };
-      await ctx.receipts.log({ tool: action.tool, input: {}, result, trigger: ctx.trigger, performed: false, status: "pin_required" });
       return result;
     }
 

@@ -1,6 +1,6 @@
 import type { Env } from "./env.js";
 import { SystemClock } from "./clock.js";
-import { verifyTelegramWebhook } from "./router/telegram-webhook.js";
+import { eventTextFor, verifyTelegramWebhook } from "./router/telegram-webhook.js";
 import { buildJarvis } from "./jarvis/build.js";
 import { DeepSeekModel } from "./model/deepseek.js";
 import { MissingModelKeyError } from "./model/types.js";
@@ -18,7 +18,8 @@ import { newId } from "./ids.js";
 import type { JarvisEvent } from "./jarvis/agent-core.js";
 import { AppEventsRepo, D1AppEventsRepo, wakeOnAppEvent } from "./apps/app-events.js";
 import { buildConnectTwiml } from "./voice/twiml.js";
-import { verifyTwilioSignature } from "./voice/twilio-signature.js";
+import { twilioSignedUrlCandidates, verifyTwilioSignatureAny } from "./voice/twilio-signature.js";
+import { VoiceRelay } from "./voice/relay.js";
 import { fireWakeup, handleCron } from "./scheduler/cron.js";
 import { buildVaultExport, authorizeVaultExport } from "./plumbing/vault.js";
 import type { D1Db } from "./persistence/d1.js";
@@ -108,7 +109,13 @@ export default {
         params[k] = String(v);
       });
       const sig = request.headers.get("x-twilio-signature");
-      const ok = await verifyTwilioSignature(env.TWILIO_AUTH_TOKEN, request.url, params, sig);
+      // Twilio signs the public URL it dialed; PUBLIC_ORIGIN is that origin.
+      const ok = await verifyTwilioSignatureAny(
+        env.TWILIO_AUTH_TOKEN,
+        twilioSignedUrlCandidates(request.url, env.PUBLIC_ORIGIN),
+        params,
+        sig,
+      );
       if (!ok) return json({ ok: false, reason: "bad twilio signature" }, 403);
 
       const origin = env.PUBLIC_ORIGIN ?? url.origin;
@@ -119,6 +126,29 @@ export default {
         status: 200,
         headers: { "content-type": "text/xml" },
       });
+    }
+
+    // ConversationRelay WebSocket. Twilio signs the handshake (X-Twilio-Signature
+    // over the wss:// URL we gave it, which carries `from` and `callSid`). Verify
+    // here — fail closed — then hand the socket to the owner's DO, where the
+    // relay feeds each utterance to the same brain as Telegram.
+    if (url.pathname === "/voice/ws") {
+      if ((request.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
+        return json({ ok: false, reason: "expected a WebSocket upgrade" }, 426);
+      }
+      const sig = request.headers.get("x-twilio-signature");
+      const ok = await verifyTwilioSignatureAny(
+        env.TWILIO_AUTH_TOKEN,
+        twilioSignedUrlCandidates(request.url, env.PUBLIC_ORIGIN, true),
+        {},
+        sig,
+      );
+      if (!ok) return json({ ok: false, reason: "bad twilio signature" }, 403);
+      const ns = env.JARVIS as DurableObjectNamespace | undefined;
+      if (!ns) return json({ ok: false, reason: "JARVIS DO binding missing" }, 500);
+      if (!env.OWNER_CHAT_ID) return json({ ok: false, reason: "OWNER_CHAT_ID not configured" }, 500);
+      const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+      return stub.fetch(new Request(`https://do/voice/ws${url.search}`, request));
     }
 
     // School surface: the 4 routes the School Helper extension dials. Forwarded
@@ -269,11 +299,15 @@ export class JarvisDurableObject {
     if (url.pathname.startsWith("/school/")) {
       return this.handleSchool(request);
     }
+    if (url.pathname === "/voice/ws") {
+      return this.handleVoiceSocket(url);
+    }
     const update = (await request.json()) as {
       chatId: string;
       text: string;
       provenance: JarvisEvent["provenance"];
       callbackData?: string;
+      attachments?: string[];
     };
 
     let built;
@@ -293,7 +327,7 @@ export class JarvisDurableObject {
       channel: "text",
       trigger: "text",
       provenance: update.provenance,
-      text: update.text,
+      text: eventTextFor(update),
       eventId: newId("evt"),
     };
 
@@ -385,6 +419,75 @@ export class JarvisDurableObject {
     await built.heartbeat.record("alarm");
     const res = await built.wakeups.fireDue((w) => fireWakeup(w, { agent: built.agent, reviewer: built.reviewer }));
     if (res.failed.length > 0) console.error("alarm: wake-ups failed and stay queued", JSON.stringify(res.failed));
+  }
+
+  /**
+   * Accept the (already signature-verified) ConversationRelay socket and run
+   * the voice relay on it. The socket is accepted directly (not hibernated) so
+   * the per-call session — role, PIN state, guest transcript — lives in memory
+   * for exactly the length of the call and vanishes with it.
+   */
+  private handleVoiceSocket(url: URL): Response {
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    server.accept();
+    const send = (m: unknown) => {
+      try {
+        server.send(JSON.stringify(m));
+      } catch (e) {
+        console.error("voice relay: send failed", (e as Error).message);
+      }
+    };
+
+    const ownerId = this.env.OWNER_CHAT_ID ?? "";
+    let built;
+    try {
+      built = this.ensureBuilt(ownerId);
+    } catch (e) {
+      // No model: say so on the call and hang up. Never a fake conversation.
+      const line =
+        e instanceof MissingModelKeyError
+          ? "Jarvis has no model configured, so I can't talk right now. Nothing was done."
+          : "Jarvis could not start, so I can't talk right now. Nothing was done.";
+      server.addEventListener("message", () => {
+        send({ type: "text", token: line, last: true });
+        send({ type: "end", handoffData: JSON.stringify({ reason: "jarvis unavailable" }) });
+      });
+      console.error("voice relay: cannot build Jarvis:", (e as Error).message);
+      return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: CfWebSocket });
+    }
+
+    const relay = new VoiceRelay({
+      agent: built.agent,
+      guests: built.guests,
+      receipts: built.receipts,
+      clock: new SystemClock(),
+      ownerPhoneE164: this.env.OWNER_PHONE_E164,
+      ownerPinVerifier: built.ownerPinVerifier,
+      pinPepper: this.env.OWNER_PIN_PEPPER,
+      signedFrom: url.searchParams.get("from") ?? "",
+      signedCallSid: url.searchParams.get("callSid") ?? "",
+      send,
+      close: (code, reason) => {
+        try {
+          server.close(code, reason);
+        } catch {
+          /* already closed */
+        }
+      },
+      newEventId: () => newId("evt"),
+    });
+    server.addEventListener("message", (event) => {
+      const raw = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
+      const done = relay.onMessage(raw);
+      this.state.waitUntil?.(done);
+    });
+    server.addEventListener("close", () => {
+      const done = relay.onClose();
+      this.state.waitUntil?.(done);
+    });
+    return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: CfWebSocket });
   }
 
   private async handleVaultExport(request: Request): Promise<Response> {

@@ -3,9 +3,12 @@ import { newCallSession, type CallSession } from "./call-session.js";
 
 /**
  * Identify a caller by phone number: owner, guest, or unknown. Caller ID alone
- * can be spoofed, which is why the five actions still require the PIN on a call —
- * this only decides which PROMPT and which tools the caller gets, never whether a
- * sensitive action may run.
+ * can be spoofed, so it only decides which PROMPT the caller starts with:
+ *  - owner: Sid's brain. The five actions still require the owner PIN on the call.
+ *  - guest: a guest-PIN prompt ONLY. The guest's granted access is withheld until
+ *    they enter their own 4-digit guest PIN (verifyGuestPinOnCall). A spoofed
+ *    guest number therefore learns nothing.
+ *  - unknown: a minimal prompt with no access at all.
  *
  * FAIL CLOSED: with no configured owner phone, a caller is never treated as the
  * owner.
@@ -20,7 +23,8 @@ export async function identifyCaller(
   }
   const guest = await guests.activeByPhone(fromNumber);
   if (guest) {
-    return newCallSession({ callerId: fromNumber, role: "guest", access: guest.access });
+    // Deliberately NO access here — see verifyGuestPinOnCall.
+    return newCallSession({ callerId: fromNumber, role: "guest", guestId: guest.id });
   }
   return newCallSession({ callerId: fromNumber, role: "unknown" });
 }

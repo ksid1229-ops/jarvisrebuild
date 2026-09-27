@@ -33,6 +33,44 @@ export async function verifyTwilioSignature(
   return timingSafeEqual(expected, providedSignature);
 }
 
+/**
+ * The URLs Twilio may have signed for a request that reached us at
+ * `requestUrl`. Twilio signs the exact public URL it dialed. Behind Cloudflare,
+ * `request.url` can differ from that (custom domain vs workers.dev, scheme), so
+ * PUBLIC_ORIGIN — the same origin we hand Twilio in TwiML — is tried first.
+ * For the ConversationRelay WebSocket handshake Twilio dialed a wss:// URL, so
+ * both the wss:// and https:// spellings are candidates. Every candidate still
+ * needs a valid HMAC from the auth token, so trying several weakens nothing.
+ */
+export function twilioSignedUrlCandidates(requestUrl: string, publicOrigin: string | undefined, websocket = false): string[] {
+  const req = new URL(requestUrl);
+  const pathAndQuery = req.pathname + req.search;
+  const bases: string[] = [];
+  if (publicOrigin && publicOrigin.trim() !== "") bases.push(publicOrigin.trim().replace(/\/+$/, ""));
+  bases.push(req.origin);
+  const out: string[] = [];
+  for (const base of bases) {
+    const https = base.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+    const wss = https.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
+    if (websocket) out.push(wss + pathAndQuery);
+    out.push(https + pathAndQuery);
+  }
+  return [...new Set(out)];
+}
+
+/** True when the signature matches ANY candidate URL (see twilioSignedUrlCandidates). */
+export async function verifyTwilioSignatureAny(
+  authToken: string | undefined,
+  candidateUrls: string[],
+  params: Record<string, string>,
+  providedSignature: string | null,
+): Promise<boolean> {
+  for (const url of candidateUrls) {
+    if (await verifyTwilioSignature(authToken, url, params, providedSignature)) return true;
+  }
+  return false;
+}
+
 function base64(bytes: Uint8Array): string {
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);

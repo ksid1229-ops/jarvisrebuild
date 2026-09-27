@@ -41,13 +41,10 @@ index_name = "jarvis-memory"
 [ai]
 binding = "AI"
 
-# --- Queues: slow work such as email processing ---
-[[queues.producers]]
-binding = "WORK_QUEUE"
-queue = "jarvis-work"
-
-[[queues.consumers]]
-queue = "jarvis-work"
+# --- Queues: none yet ---
+# Nothing in src/ uses a queue and the Worker exports no queue() handler, so no
+# queue is declared (a declared queue that was never created blocks `wrangler
+# deploy`). Add one back together with its code when email processing needs it.
 
 # --- Cron: hourly poll + nightly backup (see scheduler) ---
 [triggers]

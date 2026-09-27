@@ -63,19 +63,24 @@ export class DeepSeekModel implements Model {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: this.model,
       messages: request.messages.map(toWireMessage),
-      tools: request.tools.map((t) => ({
+    };
+    // OpenAI-compatible APIs reject an empty `tools` array (and `tool_choice`
+    // without tools) with a 400. Tool-less requests — guest calls, conversation
+    // summaries, memory reviews — must omit both.
+    if (request.tools.length > 0) {
+      body.tools = request.tools.map((t) => ({
         type: "function" as const,
         function: {
           name: t.name,
           description: t.description,
           parameters: t.parameters,
         },
-      })),
-      tool_choice: "auto" as const,
-    };
+      }));
+      body.tool_choice = "auto";
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.firstTokenTimeoutMs);

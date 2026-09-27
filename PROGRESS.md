@@ -1,14 +1,14 @@
 # Jarvis rebuild — PROGRESS
 
 **Status (2026-09-26, session arena/01a0e025):** all 7 phases' feature code + D1 persistence +
-school receiver/pull channel + **memory hardening** (this session). **139/139 tests green**,
-`tsc --noEmit` clean, school app untouched (231→238 tests in `apps/school-helper`, not re-run
-this session — no files there changed).
+school receiver/pull channel + memory hardening + **audit fixes and the inbound-call WebSocket
+loop** (this session, see "Session: audit response" at the end). **167/167 tests green**,
+`tsc --noEmit` clean, school app untouched (not re-run this session — no files there changed).
 
-**Exact next step:** rebuild the connectors that were reported done but NEVER PUSHED (see
-"Lost work" below): Cloudflare email in (school@onesid.ca) + Gmail API / MS Graph out, Twilio
-REST + the ConversationRelay WebSocket loop on the DO, and the Windows PC agent. Nothing here is
-deployed; Sid does production deploys.
+**Exact next step:** rebuild the remaining connectors that were reported done but NEVER PUSHED
+(see "Lost work" below): Cloudflare email in (school@onesid.ca) + Gmail API / MS Graph out,
+Twilio REST (outbound call/SMS), and the Windows PC agent. Nothing here is deployed; Sid does
+production deploys.
 
 ### Lost work (verified from git, not memory)
 
@@ -233,7 +233,10 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 - **R2** — `R2BucketAdapter` tested against a paging fake of the R2 list API; not real R2.
 - **Durable Object alarm** — `alarm()` + `storage.setAlarm` are wired in `src/index.ts`, which
   has no test harness (no Miniflare here). The alarm's logic (`fireDue` + `fireWakeup`) is tested.
-- **Telegram / Twilio** — no credentials. `TelegramChannel` is real code, unrun.
+- **Telegram / Twilio** — no credentials. `TelegramChannel` is real code, unrun. The voice relay
+  (`src/voice/relay.ts`) is tested with the real brain and scripted Twilio messages; the Worker/DO
+  WebSocket plumbing around it (`WebSocketPair`, the 101 upgrade) has no harness here and has never
+  carried a live call.
 
 ## Honesty audit (against the brief's mandatory rules)
 
@@ -248,8 +251,8 @@ Each guard below was broken on purpose; the named test went red; then reverted. 
 ## Not yet built (be honest with Sid)
 
 - Email in (Cloudflare Email Worker for school@onesid.ca) and out (Gmail API / MS Graph). Lost; to rebuild.
-- Twilio REST (outbound call/SMS) and the ConversationRelay WebSocket loop on the DO. Lost; to rebuild.
-  The `/voice` webhook, signature check, TwiML, PIN and guest logic exist and are tested.
+- Twilio REST (outbound call/SMS). Lost; to rebuild. (The inbound ConversationRelay WebSocket loop
+  was rebuilt this session — `/voice/ws` → `VoiceRelay` on the DO.)
 - Windows PC agent (`apps/pc-agent`) incl. vault sync script. Lost; to rebuild.
 - The five action tools are wired to NO real provider — each returns `not_connected`.
 - `/vault/export` still reads `facts.all()` (includes hidden/superseded versions); decide with Sid
@@ -273,8 +276,8 @@ All seven phases' feature code is built and tested. What remains is deploy-side 
 - D1/DO/Vectorize/R2 production persistence adapters (in-memory / fake stand-ins today). Repos are
   written against `migrations/0001_init.sql`'s shape, so this is adapter work, not a redesign.
 - Durable Object state persisted across evictions (today the DO keeps state only for its lifetime).
-- The DO WebSocket loop that streams ConversationRelay call turns (the `/voice` webhook + all voice
-  logic exist and are tested; this is the transport that carries a voice turn into the same agent core).
+- ~~The DO WebSocket loop for ConversationRelay call turns~~ — built in the audit-response
+  session (`/voice/ws` → `VoiceRelay`); not yet run on a live call.
 - The five action tools are wired to NO real provider on purpose — each returns `not_connected`.
 
 ---
@@ -406,7 +409,7 @@ found worse problems than the review listed; all fixed and tested here.
 The quiet-review mutation sweep found one real bug in my own first version (cap fallback could
 skip messages sharing an instant forever); fixed and pinned by two tests before commit.
 
-## Signature (this session)
+## Signature (memory-hardening session)
 
 Built by:
 - Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; not disclosed for signing)
@@ -415,3 +418,96 @@ Built by:
 - Knowledge cutoff: UNKNOWN
 - Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
 - Phases completed this session: none new; memory hardening across Phases 2, 6 and 7 (conversation never deleted, provenance, corrections, history_search, memory reviews + extraction model, Vectorize/R2/alarm wiring, full backup)
+
+---
+
+## Session: audit response (2026-09-26, branch arena/01a0e025-jarvisrebuild)
+
+Sid pasted a third-party "Full Codebase Deep Audit". It was run against `main` (18b0570, 59
+tests), not this branch (139 tests), so several findings were already fixed here. Each finding
+was checked against HEAD `1da7016` before touching code:
+
+| # | Finding | On this branch | What was done |
+|---|---|---|---|
+| 1.1 | Voice PIN dead-end: `confirm()` marked the action confirmed, THEN refused for no PIN, so it could never be confirmed again | **Real** | `executeConfirmed` now runs every "not yet" check (PIN on a call, unknown tool) on a read-only `get()` BEFORE `confirm()`. The action stays pending; the result says so. |
+| 1.2 | `tools: []` + `tool_choice` sent to DeepSeek → 400 on guest calls / summaries / reviews | **Real** | Both omitted when there are no tools. |
+| 1.3 | DO alarm never fires | Already fixed (afb1820) | — |
+| 1.4 | Archive never written | Already fixed (afb1820) | — |
+| 2.1 | A guest got their access prompt from caller ID alone (spoofable) | **Real** | Matched guest starts with NO access and a PIN-only prompt; its single tool `guest_pin_verify` (or the keypad) checks the hash; only then does `access` enter the session. Re-checked every turn (revoke/expiry mid-call cuts access). |
+| 2.2 | Twilio signature checked against `request.url`, not the public URL | **Real** | `twilioSignedUrlCandidates` tries `PUBLIC_ORIGIN` first, then `request.url`; wss:// and https:// for the WebSocket handshake. Every candidate still needs a valid HMAC. |
+| 2.3 | Telegram: >4096 chars fails; captions and attachments dropped | **Real** | `splitForTelegram` (line/space/hard cut, never mid-surrogate; parts rejoin exactly); partial failure says which part failed. Caption used as text; attachments named honestly in the event text; empty service updates acked, not processed. |
+| 3.1 | All repos in-memory | Already fixed (3f1bc3a) | — |
+| 3.2 | No `/voice/ws` route | **Real** (lost work) | Built: Worker verifies the handshake signature (fail closed) and forwards to the DO; DO accepts the socket and runs `VoiceRelay` → the same `AgentCore.handle` as Telegram. |
+| 4 | No `/school/*` routes or tools | Already fixed (5bd2f20, 930a2c4) | — |
+
+**Found beyond the audit:**
+- `wrangler.toml` declared a `jarvis-work` queue (producer + consumer) that nothing uses, with no
+  `queue()` handler and no `wrangler queues create` step in the README — a deploy blocker. Removed,
+  with a comment to re-add it alongside real code.
+- 4-digit PINs had no guess limit on a call. Added `MAX_PIN_FAILURES_PER_CALL = 3` (owner and
+  guest, spoken and keypad share the counter); then PIN entry locks for that call.
+- The TwiML comment claimed streaming; replies are sent whole (one `text` message, `last: true`).
+  Comment corrected. Keypad detection (`dtmfDetection="true"`) was missing — keypad PINs could
+  never have arrived. Added.
+- Checked the model id: `deepseek-flash` is DeepSeek's documented name for V4.1 Flash (API
+  changelog, 2026-09-10). Unchanged.
+
+**Voice relay design (`src/voice/relay.ts`), flagged for Sid:**
+- The signed WebSocket URL carries `from` + `callSid`; the `setup` message must match it or the
+  call is ended (receipted).
+- Messages are processed strictly in order. `interrupt` and `error` are receipted.
+- Keypad: digits collect on the call session; 4 digits (or `#`) → checked in code against the
+  owner PIN or the guest's hash; `*` clears. The digits are never logged or stored. The brain is
+  then given a `[keypad] … Result: <status>` turn (outcome only) so it can carry on — e.g.
+  confirm the pending action. That line is stored in the conversation like any call turn.
+- A model failure is spoken as a fixed status line ("couldn't reach my model … Nothing was
+  done"), never an invented answer. With no model key at all the call hears that and ends.
+- The socket is accepted directly, not hibernated: the per-call session (role, PIN state, guest
+  transcript) lives exactly as long as the call. Hibernation's 2 KB attachment limit can't hold a
+  guest transcript.
+- Unverified: whether Twilio signs the handshake over the `wss://` or `https://` spelling of the
+  URL — both are tried. First live call will show which; check `wrangler tail` for a 403.
+
+**Files:** `src/confirmations/gate.ts`, `src/model/deepseek.ts`, `src/voice/{call-session,
+caller-id,call-auth (new),guest-prompt,voice-tools,twilio-signature,twiml,relay (new)}.ts`,
+`src/jarvis/agent-core.ts` (guest loop), `src/channels/telegram-channel.ts`,
+`src/router/telegram-webhook.ts`, `src/index.ts` (`/voice/ws` route, DO socket, caption text),
+`src/cf-types.d.ts`, `wrangler.toml`, `README.md`, `test/audit-fixes.test.ts` (28 new tests).
+
+**Mutation sweep (19 planted faults, each restored; all red):**
+
+| Guard | Planted fault | Result |
+|---|---|---|
+| 1.1 action survives pin_required | confirm() before the PIN check | red (11) |
+| 1.2 no empty tools | always send tools | red |
+| 2.1 caller ID gives no access | identifyCaller grants access | red (4) |
+| 2.1 guest hash checked | accept any guest PIN | red |
+| 2.1 guest lock | removed guest limit | red |
+| 2.1 owner lock | removed owner limit | red |
+| 2.1 revoke mid-call | skipped re-check | red |
+| 2.2 PUBLIC_ORIGIN used | ignored it | red (2) |
+| 2.2 wss handshake URL | dropped wss candidate | red |
+| 2.3 split | sent whole | red |
+| 2.3 surrogate pairs | removed the pair guard | red (after fixing the test — first version used an even offset and could not fail) |
+| 2.3 caption | dropped caption | red |
+| 2.3 partial failure honest | ignored a failed part | red |
+| 3.2 setup must match signed URL | allowed mismatch | red |
+| 3.2 keypad verifies | never submitted | red (3) |
+| 3.2 digits never logged | logged the pin | red |
+| 3.2 prompt before setup | processed it | red |
+| 3.2 session dies with call | kept it | red |
+| 3.2 model failure spoken | stayed silent | red |
+
+**Still open from the audit's roadmap:** Twilio outbound (`call_place` / `make_call` /
+`text_on_behalf` stay `not_connected`), email in/out, PC agent. `resetAlarm()` on DO start and a
+live check of the wrangler bindings are still undone.
+
+## Signature (this session)
+
+Built by:
+- Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; not disclosed for signing)
+- Company that made you: UNKNOWN
+- Reasoning / effort level (if known): UNKNOWN
+- Knowledge cutoff: UNKNOWN
+- Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
+- Phases completed this session: audit response — Phase 4 (PIN confirm fix), Phase 5 (guest PIN, signature URL, PIN lockout, inbound ConversationRelay WebSocket loop), Phase 1 (Telegram split/caption, DeepSeek empty-tools), Phase 7 (wrangler queue removed)

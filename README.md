@@ -113,8 +113,10 @@ See `PROGRESS.md` for the exact, verified list. In short: text conversations, me
 recall, correct, forget, pin; meaning + literal search; automatic memory reviews when a
 conversation goes quiet and hourly), connected apps, the five confirmed actions with enforced
 confirmation and shadow mode, receipts, wake-ups (Durable Object alarm + hourly cron), backups to
-R2, the conversation archive, and the school receiver. **Not built yet:** email in/out, Twilio
-outbound + the live call WebSocket loop, and the Windows PC agent. The five action tools say
+R2, the conversation archive, the school receiver, and **inbound phone calls** (Twilio
+ConversationRelay WebSocket on the Durable Object; owner PIN and guest PIN by voice or keypad —
+tested against fakes only, never on a live Twilio call yet). **Not built yet:** email in/out,
+Twilio outbound (Jarvis calling or texting), and the Windows PC agent. The five action tools say
 `not connected` rather than pretending.
 
 The vault export endpoint is `GET /vault/export` with header `x-vault-token`. Set the token:
@@ -124,12 +126,24 @@ cd $HOME\jarvisrebuild
 wrangler secret put VAULT_EXPORT_TOKEN
 ```
 
-To connect the phone number after deploy, point your Twilio number's Voice webhook at
-`https://<your-worker>.workers.dev/voice` (HTTP POST), and set the PIN + phone secrets:
+To connect the phone number after deploy:
+
+1. In the Twilio Console, accept the **Predictive and Generative AI/ML Features Addendum**
+   (Voice → Settings). ConversationRelay refuses calls until it is accepted.
+2. Point your Twilio number's Voice webhook at `https://<your-worker>.workers.dev/voice`
+   (HTTP POST).
+3. Set the phone secrets:
 
 ```powershell
 cd $HOME\jarvisrebuild
 wrangler secret put TWILIO_AUTH_TOKEN
-wrangler secret put OWNER_PHONE_E164
-wrangler secret put OWNER_PIN_PEPPER
+wrangler secret put OWNER_PHONE_E164      # your cell, e.g. +16135550123
+wrangler secret put OWNER_ACTION_PIN      # your 4-digit PIN for the five actions on a call
+wrangler secret put OWNER_PIN_PEPPER      # any long random string
+wrangler secret put PUBLIC_ORIGIN         # exactly the origin in step 2, e.g. https://<your-worker>.workers.dev
 ```
+
+`PUBLIC_ORIGIN` must match the address Twilio dials, character for character, because Twilio
+signs that exact URL and Jarvis refuses any call whose signature does not check out. On a call
+you can say your PIN or type it on the keypad (`*` clears, `#` sends early). Three wrong PINs lock
+PIN entry for the rest of that call; hang up and call back to try again.

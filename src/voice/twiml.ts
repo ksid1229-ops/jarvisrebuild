@@ -1,7 +1,8 @@
 /**
  * Twilio voice webhook: returns TwiML that connects the call to ConversationRelay
  * (speech-to-text in, text-to-speech out) pointed at a WebSocket on the Jarvis
- * Durable Object. Streaming the reply is what makes speech start quickly.
+ * Durable Object. dtmfDetection is on so Sid (or a guest) can key a PIN on the
+ * keypad instead of saying it aloud.
  */
 export function buildConnectTwiml(websocketUrl: string): string {
   const safe = escapeXml(websocketUrl);
@@ -9,7 +10,7 @@ export function buildConnectTwiml(websocketUrl: string): string {
     `<?xml version="1.0" encoding="UTF-8"?>` +
     `<Response>` +
     `<Connect>` +
-    `<ConversationRelay url="${safe}" ttsProvider="Google" transcriptionProvider="Google" />` +
+    `<ConversationRelay url="${safe}" ttsProvider="Google" transcriptionProvider="Google" dtmfDetection="true" />` +
     `</Connect>` +
     `</Response>`
   );

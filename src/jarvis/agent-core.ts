@@ -9,7 +9,9 @@ import type { ChatMessage, Model } from "../model/types.js";
 import type { Channel, Provenance, Trigger } from "../types.js";
 import { ToolDispatcher } from "../confirmations/gate.js";
 import { buildSystemPrompt } from "./system-prompt.js";
-import { buildGuestPrompt } from "../voice/guest-prompt.js";
+import { buildGuestPinPrompt, buildGuestPrompt } from "../voice/guest-prompt.js";
+import { guestStillActive, verifyGuestPinOnCall } from "../voice/call-auth.js";
+import type { ToolDefinition } from "../model/types.js";
 import type { CallSession } from "../voice/call-session.js";
 import type { OwnerPinVerifier } from "../voice/pin.js";
 import type { GuestsStore } from "../voice/guests-repo.js";
@@ -17,6 +19,18 @@ import type { OwnerChannel, ToolContext } from "./tool-types.js";
 
 /** A runaway cap on tool-calling rounds (system protection, not "one action per turn"). */
 export const MAX_TOOL_ROUNDS = 8;
+
+/** Rounds on a guest turn: at most a PIN check and a spoken answer, with slack. */
+const MAX_GUEST_ROUNDS = 3;
+
+/** The only tool a guest-number caller ever sees, and only before their PIN is proven. */
+export const GUEST_PIN_TOOL: ToolDefinition = {
+  name: "guest_pin_verify",
+  description:
+    "Check the caller's 4-digit guest PIN. Call it with exactly the four digits the caller said. " +
+    "Only after it succeeds may you use the guest's granted access.",
+  parameters: { type: "object", properties: { pin: { type: "string" } }, required: ["pin"] },
+};
 
 export interface JarvisEvent {
   channel: Channel;
@@ -263,35 +277,78 @@ export class AgentCore {
    * fix for the first build's leak of pinned facts into guest prompts.
    */
   private async handleGuest(event: JarvisEvent, call: CallSession): Promise<AgentResult> {
-    const system = buildGuestPrompt({
-      access: call.access,
-      nowIso: this.d.clock.nowIso(),
-      timezone: this.d.timezone,
-    });
-    call.guestHistory.push({ role: "user", content: event.text });
-    const messages: ChatMessage[] = [
-      { role: "system", content: system },
-      ...call.guestHistory,
-    ];
-    let resp;
-    try {
-      // Guests get NO tools.
-      resp = await this.d.model.complete({ messages, tools: [] });
-    } catch (e) {
-      const msg = (e as Error).message;
-      await this.d.receipts.log({
-        tool: "model",
-        input: { guestCall: call.callId },
-        result: { error: msg },
-        trigger: event.trigger,
-        performed: false,
-        status: "error",
-      });
-      return { reply: "", iterations: 0, error: msg, toolCalls: [] };
+    // A matched guest who has not proved themselves gets the PIN prompt and ONE
+    // tool (guest_pin_verify). A verified guest is re-checked every turn so a
+    // revoke or expiry mid-call takes effect on the next utterance.
+    let revoked = false;
+    if (call.role === "guest" && call.guestVerified) {
+      revoked = !(await guestStillActive(call, this.d.guests, this.d.clock));
     }
-    const reply = resp.content;
+    call.guestHistory.push({ role: "user", content: event.text });
+
+    const toolCalls: AgentResult["toolCalls"] = [];
+    let rounds = 0;
+    let reply = "";
+    while (rounds < MAX_GUEST_ROUNDS) {
+      rounds++;
+      const pinPhase = call.role === "guest" && !!call.guestId && !call.guestVerified;
+      const system = pinPhase
+        ? buildGuestPinPrompt({ nowIso: this.d.clock.nowIso(), timezone: this.d.timezone, revoked })
+        : buildGuestPrompt({ access: call.access, nowIso: this.d.clock.nowIso(), timezone: this.d.timezone });
+      const messages: ChatMessage[] = [{ role: "system", content: system }, ...call.guestHistory];
+      let resp;
+      try {
+        // Guests get NO tools, except guest_pin_verify while their PIN is unproven.
+        resp = await this.d.model.complete({ messages, tools: pinPhase ? [GUEST_PIN_TOOL] : [] });
+      } catch (e) {
+        const msg = (e as Error).message;
+        await this.d.receipts.log({
+          tool: "model",
+          input: { guestCall: call.callId },
+          result: { error: msg },
+          trigger: event.trigger,
+          performed: false,
+          status: "error",
+        });
+        return { reply: "", iterations: rounds, error: msg, toolCalls };
+      }
+      if (resp.toolCalls.length === 0) {
+        reply = resp.content;
+        break;
+      }
+      call.guestHistory.push({ role: "assistant", content: resp.content, toolCalls: resp.toolCalls });
+      for (const tc of resp.toolCalls) {
+        let result: import("./tool-types.js").ToolResult;
+        if (tc.name !== GUEST_PIN_TOOL.name || !pinPhase) {
+          result = { ok: false, status: "refused", message: `No tool named ${tc.name} is available on this call.` };
+        } else {
+          let pin = "";
+          try {
+            pin = String((JSON.parse(tc.argumentsJson || "{}") as { pin?: unknown }).pin ?? "");
+          } catch {
+            pin = "";
+          }
+          result = await verifyGuestPinOnCall(call, pin, {
+            guests: this.d.guests,
+            pepper: this.d.pinPepper,
+            clock: this.d.clock,
+          });
+          // Receipt of the attempt — never the digits.
+          await this.d.receipts.log({
+            tool: GUEST_PIN_TOOL.name,
+            input: { guestCall: call.callId, guestId: call.guestId, via: "spoken" },
+            result: { ok: result.ok, status: result.status },
+            trigger: event.trigger,
+            performed: result.ok === true,
+            status: String(result.status),
+          });
+        }
+        toolCalls.push({ name: tc.name, ok: result.ok === true, status: String(result.status) });
+        call.guestHistory.push({ role: "tool", content: JSON.stringify(result), toolCallId: tc.id, name: tc.name });
+      }
+    }
     if (reply.trim() !== "") call.guestHistory.push({ role: "assistant", content: reply });
-    return { reply, iterations: 0, toolCalls: [] };
+    return { reply, iterations: rounds, toolCalls };
   }
 
   private async currentSystemPrompt(channel: Channel): Promise<string> {
