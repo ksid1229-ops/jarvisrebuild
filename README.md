@@ -151,8 +151,9 @@ open-a-page, drive-your-real-Chrome), reports results, and syncs the Obsidian va
 Two things said plainly rather than left implicit: (1) the page jobs (`open_url`, `browser`)
 drive YOUR real, logged-in Chrome profile — that is the point (reading D2L as you) — so they
 take web URLs only (http/https), never `file:`; (2) `pc_execute` runs arbitrary PowerShell
-with no confirmation — your recorded call ("jarvis can do literally anything he wants" on the
-PC, 2026-09-26); the proof trail is receipts + the `[pc result]` wake, not a gate.
+with no confirmation while you are LIVE in the conversation (your call, 2026-09-26, refined the
+same day); jobs a WAKE asks for (an app event, an email, a timer) wait for your YES like the
+five actions. The proof trail is receipts + the `[pc result]` wake.
 Install it (PowerShell):
 
 ```powershell

@@ -4,10 +4,11 @@
 surface + memory hardening + audit rounds 1–4 + SMS/phone out + email in/out, the Windows PC
 agent, spend_money via the PC, and two-way make_call. **Audit round 4** (this session: one
 finding withdrawn by the auditor after reading the code, one claim not reproducible, two real
-and fixed; see "Session: audit round 4" below). **Root 281/281, pc-agent 28/28, school-helper
-238/238 tests green**; `npm run typecheck` clean in all three projects. **41 guards
-mutation-checked across the four audit rounds** (each planted fault turned a test red before it
-was reverted). Nothing is deployed; Sid does production deploys.
+and fixed — plus Sid's answer on pc_execute, implemented; see "Session: audit round 4" below).
+**Root 287/287, pc-agent 28/28, school-helper 238/238 tests green**; `npm run typecheck`
+clean in all three projects. **45 guards mutation-checked across the four audit rounds** (each
+planted fault turned a test red before it was reverted). Nothing is deployed; Sid does
+production deploys.
 
 **Decision recorded (system of record):** `pc_execute` runs arbitrary PowerShell with no
 confirmation — Sid's instruction, 2026-09-26, in the rebuild sessions ("jarvis can do
@@ -33,17 +34,19 @@ it (see the Decision recorded block above). Verdicts on the rest:
 
 | Finding | On this branch | What was done |
 |---|---|---|
-| `pc_execute` runs arbitrary PowerShell with no confirmation | **Real behaviour, deliberate decision** | Not changed. The auditor's own correction: overriding a recorded decision of Sid's without asking is the exact failure mode the process forbids. The narrow question (does "anything" mean no gate on shell?) is Sid's; asked, not answered yet. |
+| `pc_execute` runs arbitrary PowerShell with no confirmation | **Real behaviour, deliberate decision** | Not overridden — the question was put to Sid (the auditor's own correction: overriding a recorded decision without asking is the exact failure mode the process forbids). **Sid answered, same day:** ungated while he is live in the conversation; confirmed when a wake (app event/email/timer) asks for the job. Implemented as `confirmable: "unless-live"` in the gate; 6 falsifiers + 4 mutation kills (see below). |
 | `pnpm run typecheck` fails: 7 TS2307 on `?raw` imports, no vite-env.d.ts | **Not reproducible at HEAD** | `npm run typecheck` (the script that exists) passes in all three projects at 1ad00bf, and no source file imports `?raw` anywhere. Possibly run against `main` or an old checkout. |
 | `open_url` accepts any URL including `file:`; runs in Sid's authenticated browser | **Real** | Web pages only, enforced twice: at enqueue (`src/pc/pc-tools.ts`, both `open_url` and `browser` kinds) and at execution (`apps/pc-agent/src/jobs/open-url.ts`; the Playwright runner already checked). A bare domain is REFUSED with the reason, not silently scheme-guessed (code decides nothing). The allowlist also makes the argv option-injection hazard (`xdg-open -something`) unreachable by construction — no `--` needed. The browser-profile scope is now stated in README instead of implicit. Local-file access is unchanged: the shell kind covers it, ungated per Sid's recorded call. |
 | An app's payload arrives marked `isOwner: true` | **Real on the wire** (the prompt label was round 3) | `appEventFrom` now sets `isOwner: false` — same rule the email wake already followed (its comment said so since the email session). Nothing reads `isOwner` for app events except the stated-fact guard, which the trigger check already blocks, so the flip is pure honesty. Exported so the wire itself is testable. |
 | `agent.ts:50` passes the Chrome profile dir through | Real, by design | That is the point (reading D2L as Sid). Now stated in README rather than implicit. |
 | Alarm never set / first-chatId-wins | **Stale** | Both fixed earlier (rounds 1–2); the auditor confirmed them resolved in this tree. |
 
-**Tests:** new `test/audit-round4.test.ts` (5 falsifiers) + 2 in `apps/pc-agent/tests/jobs.test.ts`
-(openUrl guard, no real spawn). **Mutation sweep (run 2026-09-26): 4/4 planted defects turned a
-suite red, then reverted clean** — server scheme check removed, agent openUrl guard removed,
-app-event isOwner flipped back to true, sourceName dropped. Root 281/281, pc-agent 28/28.
+**Tests:** new `test/audit-round4.test.ts` (11 falsifiers: 5 scheme/provenance + 6 for Sid's
+pc_execute answer) + 2 in `apps/pc-agent/tests/jobs.test.ts` (openUrl guard, no real spawn).
+**Mutation sweeps (run 2026-09-26): 8/8 planted defects turned a suite red, then reverted
+clean** — server scheme check removed, agent openUrl guard removed, app-event isOwner flipped
+back to true, sourceName dropped; then gate-always-confirm, gate-never-confirm-wakes,
+live-drops-owner-check, pc_execute flag removed. Root 287/287, pc-agent 28/28.
 
 ## Session: audit round 3 (2026-09-26, branch arena/01a0e05b-jarvisrebuild)
 

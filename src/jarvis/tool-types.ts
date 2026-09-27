@@ -106,7 +106,16 @@ export interface Tool {
   description: string;
   parameters: ToolSchema;
   /** True for exactly the five confirmed actions (brief section 3). */
-  confirmable?: boolean;
+  /**
+   * true: NEVER runs on first call — it becomes a pending action and waits for
+   * Sid's YES (the five actions).
+   *
+   * "unless-live" (audit round 4; Sid's answer, 2026-09-26): ungated when Sid
+   * himself is live in the conversation (his text or his call), but confirmed
+   * like the five when the call comes from a wake — an app event, an email, a
+   * timer. Third-party text must never steer such a tool without Sid's yes.
+   */
+  confirmable?: boolean | "unless-live";
   /**
    * Optional pre-check whose text is added to Sid's CONFIRMATION REQUEST
    * (audit round 3): a confirmable tool can show him what he is actually

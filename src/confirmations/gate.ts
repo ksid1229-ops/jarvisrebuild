@@ -5,9 +5,13 @@ import type { Tool, ToolContext, ToolResult } from "../jarvis/tool-types.js";
  *
  * Every tool call the model makes goes through dispatch(). Two guarantees code
  * enforces here, that the model cannot talk its way past:
- *  1. A confirmable tool (one of the five actions) NEVER runs on first call. It
- *     is stored as a pending action bound to (tool, exact args) and a summary is
- *     sent to Sid. It runs only via executeConfirmed(), after Sid confirms.
+ *  1. A confirmable tool NEVER runs on first call. It is stored as a pending
+ *     action bound to (tool, exact args) and a summary is sent to Sid. It runs
+ *     only via executeConfirmed(), after Sid confirms. Confirmable means either
+ *     confirmable: true (always — the five actions) or confirmable:
+ *     "unless-live" (Sid's rule for pc_execute, 2026-09-26: ungated while he is
+ *     live in the conversation, confirmed when a wake — app event, email, timer
+ *     — asks for it; third-party text never steers it without his yes).
  *  2. Shadow mode: when on, a confirmed action logs "would have done X" and does
  *     not execute.
  *
@@ -45,7 +49,7 @@ export class ToolDispatcher {
       return result;
     }
 
-    if (tool.confirmable) {
+    if (tool.confirmable === true || (tool.confirmable === "unless-live" && !isLiveOwnerTurn(ctx))) {
       return this.requestConfirmation(tool, args, ctx);
     }
 
@@ -225,6 +229,14 @@ export class ToolDispatcher {
     });
     return result;
   }
+}
+
+/**
+ * Sid himself, live, right now: his text message or his phone call. Anything
+ * else — a wake (app event, email, timer) or another caller — is not him.
+ */
+function isLiveOwnerTurn(ctx: ToolContext): boolean {
+  return (ctx.trigger === "text" || ctx.trigger === "call") && ctx.provenance.isOwner;
 }
 
 /** A factual description of a pending action (a receipt, not a judgment). */

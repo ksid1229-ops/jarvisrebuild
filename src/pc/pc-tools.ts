@@ -82,17 +82,24 @@ export async function pcOnline(pc: PcServices, clock: Clock): Promise<{ online: 
 const WEB_URL = /^https?:\/\//i;
 
 /**
- * pc_execute — queue work for Sid's Windows PC. NOT one of the five confirmed
- * actions (Sid, 2026-09-26: "jarvis can do literally anything he wants" on the
- * PC); proof comes from receipts and the [pc result] wake-up instead. What code
- * does check is shape: the kind must be legal and its required field present.
+ * pc_execute — queue work for Sid's Windows PC. NOT one of the five PIN actions.
+ * Sid's rule, set and then refined (2026-09-26: "jarvis can do literally
+ * anything he wants" on the PC; refined the same day after the auditors'
+ * question): while Sid is LIVE in the conversation (his text or call) jobs
+ * queue immediately and the proof is receipts + the [pc result] wake; when the
+ * call comes from a WAKE (an app event, an email, a timer) the job waits for
+ * his YES like the five actions — third-party text must never steer his PC.
+ * What code checks beyond that is shape: legal kind, required fields, and
+ * web-only URLs for open_url/browser.
  */
 export const pcExecute: Tool = {
+  confirmable: "unless-live",
   name: "pc_execute",
   description:
     "Queue work on Sid's Windows PC. It runs when the PC agent picks it up (the PC is on most of the day; if it's " +
     "off, the job waits and you'll get the result later — pc_status says whether it's online). kind: 'shell' runs a " +
-    "PowerShell command (args: command, optional timeout_seconds); 'open_url' opens a page in his default browser " +
+    "PowerShell command (args: command, optional timeout_seconds). While Sid is live in the conversation this queues " +
+    "right away (his rule); from a wake (app event/email/timer) it waits for his YES. 'open_url' opens a page in his default browser " +
     "(args: url); 'browser' drives his real Chrome to a page, e.g. a logged-in site (args: url, optional " +
     "instructions). Results come back to you as a [pc result] message. Everything is receipted.",
   parameters: {
