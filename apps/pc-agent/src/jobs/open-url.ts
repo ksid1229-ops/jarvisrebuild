@@ -5,7 +5,18 @@ import { spawn } from "node:child_process";
  * the page on Sid's screen and reports that the open command ran — it does NOT
  * claim the page loaded, and it automates nothing. Anything smarter is a
  * 'browser' job (Playwright, see browser.ts).
+ *
+ * Web pages only (audit round 4): http(s) URLs. This is Sid's real desktop
+ * browser, so a file: URL would open local files and any other scheme is not a
+ * page. The server refuses non-web URLs at queue time too — this is the
+ * second, independent check (the job table is D1; rows can predate a fix).
+ * The allowlist also makes option injection (a url starting with "-") neatly
+ * unreachable, which is why no "--" separator is passed below.
  */
+
+export function isWebUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url.trim());
+}
 
 export function openUrlCommand(platform: NodeJS.Platform, url: string): { program: string; args: string[] } {
   if (platform === "win32") return { program: "cmd.exe", args: ["/c", "start", "", url] };
@@ -14,6 +25,12 @@ export function openUrlCommand(platform: NodeJS.Platform, url: string): { progra
 }
 
 export function openUrl(url: string, opts: { platform?: NodeJS.Platform; spawnImpl?: typeof spawn } = {}): Promise<{ ok: boolean; detail: string }> {
+  if (!isWebUrl(url)) {
+    return Promise.resolve({
+      ok: false,
+      detail: `refused to open '${url}': only http(s) web URLs are opened (this is Sid's real desktop browser).`,
+    });
+  }
   const { program, args } = openUrlCommand(opts.platform ?? process.platform, url);
   const spawnFn = opts.spawnImpl ?? spawn;
   return new Promise((resolve) => {

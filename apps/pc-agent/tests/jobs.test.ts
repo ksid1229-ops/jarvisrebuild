@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runShellCommand, shellProgram } from "../src/jobs/shell.js";
-import { openUrlCommand } from "../src/jobs/open-url.js";
+import { openUrl, openUrlCommand } from "../src/jobs/open-url.js";
 import { runBrowserTask, NOT_INSTALLED_MESSAGE } from "../src/jobs/browser.js";
 import type { BrowserModule, BrowserContext, BrowserPage } from "../src/jobs/browser.js";
 
@@ -38,6 +38,33 @@ describe("open_url job", () => {
     expect(openUrlCommand("win32", "https://x.example")).toEqual({ program: "cmd.exe", args: ["/c", "start", "", "https://x.example"] });
     expect(openUrlCommand("darwin", "https://x.example").program).toBe("open");
     expect(openUrlCommand("linux", "https://x.example").program).toBe("xdg-open");
+  });
+
+  it("audit 4: a file: URL is refused before anything launches — this is Sid's real browser", async () => {
+    const res = await openUrl("file:///C:/Users/Sid/Documents/secret.html");
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain("only http(s) web URLs");
+  });
+
+  it("audit 4: an about: URL is refused too, and a (leading-space) https URL still opens", async () => {
+    expect((await openUrl("about:blank")).ok).toBe(false);
+    // Never really spawn: a fake launcher that reports a clean spawn.
+    const spawned: { program: string; args: string[] }[] = [];
+    const fakeSpawn = ((_program: string, args: string[]) => {
+      spawned.push({ program: _program, args });
+      const listeners: Record<string, (() => void)[]> = {};
+      const child = {
+        on(ev: string, fn: () => void) {
+          (listeners[ev] ??= []).push(fn);
+          if (ev === "spawn") setTimeout(fn, 0);
+          return child;
+        },
+      };
+      return child;
+    }) as unknown as typeof import("node:child_process").spawn;
+    const res = await openUrl("  https://x.example", { spawnImpl: fakeSpawn });
+    expect(res.ok).toBe(true);
+    expect(spawned[0]!.args.at(-1)).toBe("  https://x.example");
   });
 });
 

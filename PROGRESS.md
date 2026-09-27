@@ -1,19 +1,49 @@
 # Jarvis rebuild — PROGRESS
 
-**Status (2026-09-26 late, session arena/01a0e05b):** all 7 phases + D1 persistence + school
-surface + memory hardening + audit rounds 1–3 + SMS/phone out + email in/out, the Windows PC
-agent, spend_money via the PC, and two-way make_call. **Audit round 3** (this session: of the
-pasted claims, 7 were stale — already fixed in rounds 1–2 — and 3 were real and fixed; see
-"Session: audit round 3" below). **Root 276/276, pc-agent 26/26, school-helper 238/238 tests
-green**; `tsc --noEmit` clean in all three projects. **37 guards mutation-checked across the
-three audit rounds** (each planted fault turned a test red before it was reverted). Nothing is
-deployed; Sid does production deploys.
+**Status (2026-09-26 night, session arena/01a0e05b):** all 7 phases + D1 persistence + school
+surface + memory hardening + audit rounds 1–4 + SMS/phone out + email in/out, the Windows PC
+agent, spend_money via the PC, and two-way make_call. **Audit round 4** (this session: one
+finding withdrawn by the auditor after reading the code, one claim not reproducible, two real
+and fixed; see "Session: audit round 4" below). **Root 281/281, pc-agent 28/28, school-helper
+238/238 tests green**; `npm run typecheck` clean in all three projects. **41 guards
+mutation-checked across the four audit rounds** (each planted fault turned a test red before it
+was reverted). Nothing is deployed; Sid does production deploys.
+
+**Decision recorded (system of record):** `pc_execute` runs arbitrary PowerShell with no
+confirmation — Sid's instruction, 2026-09-26, in the rebuild sessions ("jarvis can do
+literally anything he wants" on the PC; receipts and the `[pc result]` wake are the proof
+trail, not a gate). It is also recorded in code at `src/pc/pc-tools.ts`. An external auditor
+flagged the attribution as single-sourced (it is not in the main repo's docs); the second
+source is the session record itself, which is where the instruction was given. **Still Sid's
+question to answer (asked 2026-09-26):** does "anything he wants" extend to NO confirmation on
+shell jobs, or should pc_execute join the confirmed actions? Unchanged until he answers.
 
 **Exact next step:** nothing left that was promised. Deploy-time work is Sid's (README has the
 ordered steps: D1 migrate 0004 → create the queue → deploy → secrets → Email Routing → PC agent
 install). Optional follow-ups, only if Sid asks: wiring the ConversationRelay `end_call`
 handoff message, MMS attachment reading (currently named-but-not-opened), and a
 `memory_delete` debate (forget is reversible-hide by design).
+
+## Session: audit round 4 (2026-09-26, branch arena/01a0e05b-jarvisrebuild)
+
+Sid pasted a fourth audit. The auditor had first flagged `pc_execute`'s missing confirmation as
+"the one that matters", then read `src/pc/pc-tools.ts` and WITHDREW it — the no-confirmation
+behaviour is a decision recorded in code, attributed to Sid with a date. No change was made to
+it (see the Decision recorded block above). Verdicts on the rest:
+
+| Finding | On this branch | What was done |
+|---|---|---|
+| `pc_execute` runs arbitrary PowerShell with no confirmation | **Real behaviour, deliberate decision** | Not changed. The auditor's own correction: overriding a recorded decision of Sid's without asking is the exact failure mode the process forbids. The narrow question (does "anything" mean no gate on shell?) is Sid's; asked, not answered yet. |
+| `pnpm run typecheck` fails: 7 TS2307 on `?raw` imports, no vite-env.d.ts | **Not reproducible at HEAD** | `npm run typecheck` (the script that exists) passes in all three projects at 1ad00bf, and no source file imports `?raw` anywhere. Possibly run against `main` or an old checkout. |
+| `open_url` accepts any URL including `file:`; runs in Sid's authenticated browser | **Real** | Web pages only, enforced twice: at enqueue (`src/pc/pc-tools.ts`, both `open_url` and `browser` kinds) and at execution (`apps/pc-agent/src/jobs/open-url.ts`; the Playwright runner already checked). A bare domain is REFUSED with the reason, not silently scheme-guessed (code decides nothing). The allowlist also makes the argv option-injection hazard (`xdg-open -something`) unreachable by construction — no `--` needed. The browser-profile scope is now stated in README instead of implicit. Local-file access is unchanged: the shell kind covers it, ungated per Sid's recorded call. |
+| An app's payload arrives marked `isOwner: true` | **Real on the wire** (the prompt label was round 3) | `appEventFrom` now sets `isOwner: false` — same rule the email wake already followed (its comment said so since the email session). Nothing reads `isOwner` for app events except the stated-fact guard, which the trigger check already blocks, so the flip is pure honesty. Exported so the wire itself is testable. |
+| `agent.ts:50` passes the Chrome profile dir through | Real, by design | That is the point (reading D2L as Sid). Now stated in README rather than implicit. |
+| Alarm never set / first-chatId-wins | **Stale** | Both fixed earlier (rounds 1–2); the auditor confirmed them resolved in this tree. |
+
+**Tests:** new `test/audit-round4.test.ts` (5 falsifiers) + 2 in `apps/pc-agent/tests/jobs.test.ts`
+(openUrl guard, no real spawn). **Mutation sweep (run 2026-09-26): 4/4 planted defects turned a
+suite red, then reverted clean** — server scheme check removed, agent openUrl guard removed,
+app-event isOwner flipped back to true, sourceName dropped. Root 281/281, pc-agent 28/28.
 
 ## Session: audit round 3 (2026-09-26, branch arena/01a0e05b-jarvisrebuild)
 

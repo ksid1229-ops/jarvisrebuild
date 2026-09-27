@@ -148,6 +148,11 @@ same idea. Ask in the chat for the exact click-path if you want it.
 
 `apps/pc-agent` is Jarvis's hands on your PC: it runs at logon, pulls queued jobs (PowerShell,
 open-a-page, drive-your-real-Chrome), reports results, and syncs the Obsidian vault hourly.
+Two things said plainly rather than left implicit: (1) the page jobs (`open_url`, `browser`)
+drive YOUR real, logged-in Chrome profile — that is the point (reading D2L as you) — so they
+take web URLs only (http/https), never `file:`; (2) `pc_execute` runs arbitrary PowerShell
+with no confirmation — your recorded call ("jarvis can do literally anything he wants" on the
+PC, 2026-09-26); the proof trail is receipts + the `[pc result]` wake, not a gate.
 Install it (PowerShell):
 
 ```powershell

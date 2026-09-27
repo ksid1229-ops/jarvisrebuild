@@ -77,19 +77,25 @@ export class D1AppEventsRepo implements AppEventsStore {
  * model, which DECIDES what it means and whether it is worth interrupting Sid
  * for (it may call send_text, or stay quiet). Code decides nothing here.
  */
-export async function wakeOnAppEvent(
-  agent: AgentCore,
-  event: AppEvent,
-  ownerId: string,
-): Promise<AgentResult> {
-  const jarvisEvent: JarvisEvent = {
+/**
+ * The JarvisEvent for an app event. Exported so tests can hold the WIRE itself
+ * to account, not just its downstream effects.
+ *
+ * Provenance (audit round 4, following the email wake's precedent): an app's
+ * payload is machine-reported data from a third party — never Sid's words and
+ * never an instruction from him — so isOwner is FALSE and the source type is
+ * "app" with the app's name. The system prompt labels the turn AUTOMATED EVENT
+ * (audit round 3); this boolean is the hard wire under that label.
+ */
+export function appEventFrom(event: AppEvent): JarvisEvent {
+  return {
     channel: "text",
     trigger: "app_event",
     eventId: newId("evt"),
     text: `Event from connected app '${event.appName}': ${event.payloadJson}`,
     provenance: {
       channel: "text",
-      isOwner: true,
+      isOwner: false,
       isForwarded: false,
       isPrivate: true,
       sourceRef: `app:${event.appName}:${event.id}`,
@@ -97,5 +103,13 @@ export async function wakeOnAppEvent(
       sourceType: "app",
     },
   };
-  return agent.handle(jarvisEvent);
+}
+
+export async function wakeOnAppEvent(
+  agent: AgentCore,
+  event: AppEvent,
+  ownerId: string,
+): Promise<AgentResult> {
+  void ownerId; // identity is not the app's business; provenance says whose words they are
+  return agent.handle(appEventFrom(event));
 }

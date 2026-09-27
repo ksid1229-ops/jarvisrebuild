@@ -74,6 +74,14 @@ export async function pcOnline(pc: PcServices, clock: Clock): Promise<{ online: 
 }
 
 /**
+ * Web pages only (audit round 4): open_url and browser jobs drive Sid's REAL
+ * browser profile, so their url is a web page — never file: or another scheme.
+ * Local-file access already exists through the ungated shell kind (Sid's
+ * recorded call), so this gate takes away nothing but surprise.
+ */
+const WEB_URL = /^https?:\/\//i;
+
+/**
  * pc_execute — queue work for Sid's Windows PC. NOT one of the five confirmed
  * actions (Sid, 2026-09-26: "jarvis can do literally anything he wants" on the
  * PC); proof comes from receipts and the [pc result] wake-up instead. What code
@@ -110,6 +118,16 @@ export const pcExecute: Tool = {
     }
     if ((kind === "open_url" || kind === "browser") && String(args.url ?? "").trim() === "") {
       return { ok: false, status: "refused", message: `A ${kind} job needs a url.` };
+    }
+    if ((kind === "open_url" || kind === "browser") && !WEB_URL.test(String(args.url ?? "").trim())) {
+      return {
+        ok: false,
+        status: "refused",
+        message:
+          `A ${kind} job takes a full web URL starting with http:// or https:// — these jobs open pages in ` +
+          `Sid's real, logged-in browser (audit round 4: file: and other schemes are not pages). Send the ` +
+          `complete URL, e.g. https://d2l.limestone.on.ca — a bare domain is refused rather than guessed a scheme for.`,
+      };
     }
     if (kind === "shell" && args.timeout_seconds !== undefined) {
       const t = Number(args.timeout_seconds);
