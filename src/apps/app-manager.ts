@@ -2,6 +2,7 @@ import type { ToolDispatcher } from "../confirmations/gate.js";
 import type { Tool, ToolResult } from "../jarvis/tool-types.js";
 import type { AppConnector } from "./connector.js";
 import type { ConnectedAppsStore } from "./app-registry.js";
+import type { AppToolSpec } from "./connector.js";
 import type { ConnectedApp } from "../types.js";
 
 /** Namespaced tool name so two apps can publish the same tool name safely. */
@@ -26,6 +27,24 @@ export class AppManager {
     /** Injected so tests can supply an in-process fake connector. */
     private readonly makeConnector: (app: ConnectedApp) => AppConnector,
   ) {}
+
+  /**
+   * Fetch an app's tool specs WITHOUT connecting — used by connect_app's
+   * pre-check so Sid's confirmation lists exactly what he is trusting
+   * (audit round 3: the app owns its confirmable flags, so the flags must at
+   * least be in front of Sid before he says yes).
+   */
+  async peekTools(input: { name: string; baseUrl: string; authSecret: string }): Promise<AppToolSpec[]> {
+    const temp: ConnectedApp = {
+      id: "peek",
+      name: input.name,
+      baseUrl: input.baseUrl,
+      authSecret: input.authSecret,
+      enabled: true,
+      addedAt: "",
+    };
+    return this.makeConnector(temp).listTools();
+  }
 
   /** Register the app and load its tools. Called after Sid confirms connect_app. */
   async connect(input: { name: string; baseUrl: string; authSecret: string }): Promise<{ app: ConnectedApp; toolNames: string[] }> {

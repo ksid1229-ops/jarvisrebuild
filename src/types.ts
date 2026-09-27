@@ -19,6 +19,8 @@ export interface Provenance {
   isPrivate: boolean;
   /** Opaque id of the source message/turn, for source_ref. */
   sourceRef: string;
+  /** For sourceType "app": the connected app's name (audit round 3: so the prompt can say it). */
+  sourceName?: string;
   /** conversation | call | email | app */
   sourceType: "conversation" | "call" | "email" | "app";
   /** Which of Sid's text channels this arrived on (text turns only). Replies go back on it. */

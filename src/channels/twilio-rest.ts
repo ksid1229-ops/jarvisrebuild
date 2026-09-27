@@ -27,6 +27,9 @@ export interface TwilioSendResult {
 /** Twilio's per-message body limit (it concatenates segments up to this). */
 export const SMS_MAX_BODY = 1600;
 
+/** How long a single Twilio API call may hang before the turn gives up on it. */
+export const TWILIO_TIMEOUT_MS = 10_000;
+
 const E164 = /^\+[1-9]\d{6,14}$/;
 
 export function isE164(v: string): boolean {
@@ -38,6 +41,7 @@ export class TwilioRestClient {
   constructor(
     private readonly cfg: TwilioConfig,
     fetchImpl?: typeof fetch,
+    private readonly timeoutMs = TWILIO_TIMEOUT_MS,
   ) {
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
@@ -111,6 +115,8 @@ export class TwilioRestClient {
           "content-type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams(form).toString(),
+        // Audit round 3: SMS replies sit on every turn's reply path.
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
       const text = await res.text().catch(() => "");
       if (!res.ok) return { ok: false, status: `twilio_${res.status}`, detail: text.slice(0, 300) };
@@ -122,6 +128,9 @@ export class TwilioRestClient {
       }
       return { ok: true, status: "ok", ...(sid ? { sid } : {}) };
     } catch (e) {
+      if ((e as Error).name === "TimeoutError") {
+        return { ok: false, status: "timeout", detail: `Twilio did not answer within ${this.timeoutMs}ms` };
+      }
       return { ok: false, status: "network_error", detail: (e as Error).message };
     }
   }

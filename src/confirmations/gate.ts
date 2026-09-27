@@ -86,6 +86,26 @@ export class ToolDispatcher {
     }
 
     const summary = providedSummary ?? buildSummary(tool.name, actionArgs);
+
+    // Pre-check (audit round 3): a confirmable tool may show Sid extra facts
+    // BEFORE he decides — connect_app lists the app's tools and which of them
+    // run freely, so the app cannot hide behind a vague confirmation. A
+    // throwing pre-check refuses the call: nothing is created, nothing runs.
+    let previewText = "";
+    if (tool.preview) {
+      try {
+        previewText = await tool.preview(actionArgs, ctx);
+      } catch (e) {
+        const result: ToolResult = {
+          ok: false,
+          status: "precheck_failed",
+          message: `Pre-check failed, nothing was done: ${(e as Error).message}`,
+        };
+        await ctx.receipts.log({ tool: tool.name, input: args, result, trigger: ctx.trigger, performed: false, status: "precheck_failed" });
+        return result;
+      }
+    }
+
     const pending = await ctx.pending.create({
       tool: tool.name,
       args: actionArgs,
@@ -100,7 +120,7 @@ export class ToolDispatcher {
     // Ask on the medium Sid is using right now (none on a wake-up: the channel
     // then uses the one he last texted from and says so).
     const send = await ctx.ownerChannel.sendText(
-      `Just to be sure — ${summary}\nReply YES to confirm or NO to cancel. (id ${pending.id})`,
+      `Just to be sure — ${summary}${previewText === "" ? "" : `\n${previewText}`}\nReply YES to confirm or NO to cancel. (id ${pending.id})`,
       ctx.provenance.medium,
     );
 

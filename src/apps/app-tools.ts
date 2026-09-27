@@ -6,6 +6,17 @@ const noManager = (): ToolResult => ({
   message: "Connected-apps support is not wired in this context.",
 });
 
+/** Shared validation for connect_app's run() and preview(). */
+function connectInput(args: Record<string, unknown>): { name: string; baseUrl: string; authSecret: string } {
+  const name = String(args.name ?? "");
+  const baseUrl = String(args.base_url ?? "");
+  const authSecret = String(args.auth_secret ?? "");
+  if (name === "" || baseUrl === "" || authSecret === "") {
+    throw new Error("name, base_url and auth_secret are all required.");
+  }
+  return { name, baseUrl, authSecret };
+}
+
 /**
  * connect_app — Sid connects an app by telling Jarvis. This is a one-time setup
  * step, so it is confirmable: it routes through the same enforced confirmation as
@@ -28,16 +39,37 @@ export const connectApp: Tool = {
     },
     required: ["name", "base_url", "auth_secret"],
   },
+  /**
+   * Pre-check (audit round 3): the confirmation Sid sees lists the app's tools
+   * and which of them run without asking — the app declares its own confirmable
+   * flags, so the least Jarvis owes Sid is to put them in writing before he
+   * says yes. If the app's /tools endpoint is down, the connect is refused
+   * here (it would fail at execution anyway).
+   */
+  async preview(args, ctx): Promise<string> {
+    if (!ctx.apps) return "";
+    const input = connectInput(args);
+    const specs = await ctx.apps.peekTools(input);
+    const lines =
+      specs.length === 0
+        ? "  (no tools)"
+        : specs.map((s) => `  - ${s.name} (${s.confirmable === true ? "asks you first" : "runs freely"})`).join("\n");
+    return (
+      `What you are trusting: this adds ${specs.length} tool(s) to Jarvis's catalogue, and the model ` +
+      `may call them whenever it decides (every call is receipted):\n${lines}\n` +
+      `The app can also POST events that wake Jarvis.`
+    );
+  },
   async run(args, ctx): Promise<ToolResult> {
     if (!ctx.apps) return noManager();
-    const name = String(args.name ?? "");
-    const baseUrl = String(args.base_url ?? "");
-    const authSecret = String(args.auth_secret ?? "");
-    if (name === "" || baseUrl === "" || authSecret === "") {
-      return { ok: false, status: "refused", message: "name, base_url and auth_secret are all required." };
+    let input: { name: string; baseUrl: string; authSecret: string };
+    try {
+      input = connectInput(args);
+    } catch (e) {
+      return { ok: false, status: "refused", message: (e as Error).message };
     }
     try {
-      const { app, toolNames } = await ctx.apps.connect({ name, baseUrl, authSecret });
+      const { app, toolNames } = await ctx.apps.connect(input);
       return {
         ok: true,
         status: "ok",

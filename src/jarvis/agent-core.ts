@@ -161,7 +161,12 @@ export class AgentCore {
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: await this.currentSystemPrompt(event.channel, event.provenance.medium, event.provenance.isForwarded),
+        content: await this.currentSystemPrompt(
+          event.channel,
+          event.provenance.medium,
+          event.provenance.isForwarded,
+          event.provenance.sourceType === "app" ? event.provenance.sourceName : undefined,
+        ),
       },
       ...recent.map((m): ChatMessage => ({ role: m.role, content: m.content })),
     ];
@@ -436,11 +441,13 @@ export class AgentCore {
     channel: Channel,
     medium?: import("../types.js").TextMedium,
     forwarded?: boolean,
+    sourceApp?: string,
   ): Promise<string> {
     const textChannels = this.d.textChannels ? await this.d.textChannels() : undefined;
     return buildSystemPrompt({
       ...(medium ? { medium } : {}),
       ...(forwarded ? { forwarded: true } : {}),
+      ...(sourceApp ? { sourceApp } : {}),
       ...(textChannels ? { textChannels } : {}),
       nowIso: this.d.clock.nowIso(),
       timezone: this.d.timezone,

@@ -168,7 +168,8 @@ job waits in D1 and runs when the PC checks in. Details and options: `apps/pc-ag
 
 See `PROGRESS.md` for the exact, verified list. In short: text conversations, memory (save,
 recall, correct, forget, pin; meaning + literal search; automatic memory reviews when a
-conversation goes quiet and hourly), connected apps, the five confirmed actions with enforced
+conversation goes quiet and hourly), connected apps (the confirmation you see when connecting one
+lists its tools and which run without asking), the five confirmed actions with enforced
 confirmation and shadow mode, receipts, wake-ups (Durable Object alarm + hourly cron), backups to
 R2, the conversation archive, the school receiver, **inbound phone calls** (Twilio
 ConversationRelay WebSocket on the Durable Object; owner PIN and guest PIN by voice or keypad),

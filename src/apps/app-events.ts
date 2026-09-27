@@ -93,6 +93,7 @@ export async function wakeOnAppEvent(
       isForwarded: false,
       isPrivate: true,
       sourceRef: `app:${event.appName}:${event.id}`,
+      sourceName: event.appName,
       sourceType: "app",
     },
   };

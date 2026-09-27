@@ -107,5 +107,13 @@ export interface Tool {
   parameters: ToolSchema;
   /** True for exactly the five confirmed actions (brief section 3). */
   confirmable?: boolean;
+  /**
+   * Optional pre-check whose text is added to Sid's CONFIRMATION REQUEST
+   * (audit round 3): a confirmable tool can show him what he is actually
+   * agreeing to (connect_app lists the app's tools and which run freely)
+   * BEFORE the pending action is created. A throw refuses the call outright
+   * (status precheck_failed) — nothing is created, nothing runs.
+   */
+  preview?(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }

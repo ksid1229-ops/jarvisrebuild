@@ -13,6 +13,7 @@ export class TelegramChannel implements OwnerChannel {
     private readonly botToken: string,
     private readonly chatId: string,
     fetchImpl?: typeof fetch,
+    private readonly timeoutMs = TELEGRAM_TIMEOUT_MS,
   ) {
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
@@ -42,6 +43,9 @@ export class TelegramChannel implements OwnerChannel {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: this.chatId, text }),
+        // Audit round 3: this sits on every turn's reply path — a hung Telegram
+        // connection must not hang the turn with it.
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -49,6 +53,9 @@ export class TelegramChannel implements OwnerChannel {
       }
       return { ok: true, status: "ok" };
     } catch (e) {
+      if ((e as Error).name === "TimeoutError") {
+        return { ok: false, status: "timeout", detail: `Telegram did not answer within ${this.timeoutMs}ms` };
+      }
       return { ok: false, status: "network_error", detail: (e as Error).message };
     }
   }
@@ -56,6 +63,9 @@ export class TelegramChannel implements OwnerChannel {
 
 /** Telegram's per-message limit (characters, counted as UTF-16 units). */
 export const TELEGRAM_MAX_MESSAGE = 4096;
+
+/** How long a single Telegram API call may hang before the turn gives up on it. */
+export const TELEGRAM_TIMEOUT_MS = 10_000;
 
 /**
  * Split text into parts no longer than `max`, preferring a line break, then a
