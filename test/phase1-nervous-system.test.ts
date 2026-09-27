@@ -32,7 +32,7 @@ describe("Phase 1: the nervous system", () => {
 
   it("logs every tool call as a receipt with its trigger", async () => {
     const h = makeHarness([
-      { content: "", toolCalls: [fakeToolCall("send_text", { message: "proactive hi" })] },
+      { content: "", toolCalls: [fakeToolCall("send_text", { message: "proactive hi", via: "telegram" })] },
       { content: "done" },
     ]);
     await h.agent.handle(ownerEvent("ping"));
@@ -66,7 +66,7 @@ describe("Phase 1: the nervous system", () => {
 
   it("send_text surfaces a failed delivery honestly", async () => {
     const h = makeHarness([
-      { content: "", toolCalls: [fakeToolCall("send_text", { message: "hi" })] },
+      { content: "", toolCalls: [fakeToolCall("send_text", { message: "hi", via: "sms" })] },
       { content: "noted the failure" },
     ]);
     h.ownerChannel.failNext = true;

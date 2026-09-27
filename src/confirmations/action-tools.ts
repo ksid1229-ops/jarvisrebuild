@@ -1,11 +1,14 @@
 import type { Tool, ToolContext, ToolResult } from "../jarvis/tool-types.js";
+import { contactOnBehalfRun } from "../channels/phone-tools.js";
 
 /**
  * The FIVE confirmed actions (brief section 3). Each is marked confirmable, so
  * the gate stores it as pending and it runs only after Sid confirms.
  *
- * HONESTY: none of these is wired to a real provider in this build. Each returns
- * status "not_connected" and logs it. They NEVER report "Executed" or
+ * HONESTY: contact_on_behalf is wired to Twilio (texts, and one-way message
+ * calls) and still returns not_connected when Twilio is unconfigured. The other
+ * four are not wired to a real provider in this build: each returns status
+ * "not_connected" and logs it. They NEVER report "Executed" or
  * dispatched:true. When a provider is added, replace the body — the confirmation
  * gate and receipts around it do not change.
  */
@@ -70,7 +73,10 @@ export const makeCall: Tool = {
     required: ["to", "reason"],
   },
   async run(): Promise<ToolResult> {
-    return notConnected("Making a call");
+    // A two-way conversation with someone else, on Sid's behalf, needs its own
+    // brain setup (what it may share, a transcript back to Sid). Not built.
+    // One-way message calls: contact_on_behalf with method 'call'.
+    return notConnected("Holding a two-way call with someone on Sid's behalf");
   },
 };
 
@@ -95,7 +101,9 @@ export const contactOnBehalf: Tool = {
   name: "contact_on_behalf",
   description:
     "Text or call someone on Sid's behalf. One of the five actions that always needs his confirmation. " +
-    "method ('text' or 'call'), to, message.",
+    "method ('text' or 'call'), to (their number in E.164, like +16135550123), message. It comes from " +
+    "Jarvis's Twilio number, NOT Sid's phone, so write the message so they know who it's from. A 'call' " +
+    "speaks the message once and is one-way — you can't hear their reply.",
   confirmable: true,
   parameters: {
     type: "object",
@@ -107,12 +115,7 @@ export const contactOnBehalf: Tool = {
     },
     required: ["method", "to", "message"],
   },
-  async run(args): Promise<ToolResult> {
-    if (args.method !== "text" && args.method !== "call") {
-      return { ok: false, status: "refused", message: "method must be 'text' or 'call'." };
-    }
-    return notConnected("Contacting someone on Sid's behalf");
-  },
+  run: contactOnBehalfRun,
 };
 
 export const actionTools: Tool[] = [spendMoney, sendEmail, makeCall, submitSchoolwork, contactOnBehalf];

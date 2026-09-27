@@ -97,8 +97,11 @@ export class ToolDispatcher {
     // Send Sid the confirmation. In the real Telegram channel this carries an
     // inline YES/NO tap; the fake channel just delivers the text. A failed send
     // is surfaced, not swallowed.
+    // Ask on the medium Sid is using right now (none on a wake-up: the channel
+    // then uses the one he last texted from and says so).
     const send = await ctx.ownerChannel.sendText(
       `Just to be sure — ${summary}\nReply YES to confirm or NO to cancel. (id ${pending.id})`,
+      ctx.provenance.medium,
     );
 
     const result: ToolResult = {

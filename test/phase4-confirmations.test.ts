@@ -95,7 +95,7 @@ describe("Phase 4: the five confirmed actions", () => {
   it("receipts_query returns proof of what actually happened", async () => {
     const h = makeHarness([{ content: "x" }]);
     const ctx = h.ctxFor(ownerEvent("do things", "e1"));
-    await h.dispatcher.dispatch("send_text", { message: "hi" }, ctx);
+    await h.dispatcher.dispatch("send_text", { message: "hi", via: "telegram" }, ctx);
     const res = await h.dispatcher.dispatch("receipts_query", {}, ctx);
     const rows = res.data as any[];
     expect(rows.some((r) => r.tool === "send_text" && r.performed === true)).toBe(true);

@@ -7,9 +7,12 @@ import type { OwnerChannel } from "../jarvis/tool-types.js";
  */
 export class FakeOwnerChannel implements OwnerChannel {
   public readonly sent: string[] = [];
+  /** The `via` each send asked for (undefined = the channel chose). */
+  public readonly sentVia: (string | undefined)[] = [];
   public failNext = false;
 
-  async sendText(message: string): Promise<{ ok: boolean; status: string; detail?: string }> {
+  async sendText(message: string, via?: import("../types.js").TextMedium): Promise<{ ok: boolean; status: string; detail?: string }> {
+    this.sentVia.push(via);
     if (this.failNext) {
       this.failNext = false;
       return { ok: false, status: "send_failed", detail: "fake channel was told to fail" };

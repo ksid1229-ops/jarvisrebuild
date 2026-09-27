@@ -9,21 +9,29 @@ export const sendText: Tool = {
   name: "send_text",
   description:
     "Send Sid a text message right now. Use this to reach him proactively (a wake-up fired, a " +
-    "digest is ready). For a normal reply to something he just said, you can also just write your " +
-    "reply as the assistant message. message: what to send.",
+    "digest is ready). For a normal reply to something he just said, just write your reply as the " +
+    "assistant message — it goes back on the channel he used. message: what to send. via: which of " +
+    "his text channels — 'telegram' or 'sms' (TEXT CHANNELS in your prompt says which are set up and " +
+    "which he used last). You choose.",
   parameters: {
     type: "object",
-    properties: { message: { type: "string" } },
-    required: ["message"],
+    properties: {
+      message: { type: "string" },
+      via: { type: "string", enum: ["telegram", "sms"] },
+    },
+    required: ["message", "via"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const message = String(args.message ?? "");
     if (message.trim() === "") return { ok: false, status: "refused", message: "message is empty." };
-    const res = await ctx.ownerChannel.sendText(message);
-    if (!res.ok) {
-      return { ok: false, status: res.status, message: `send failed: ${res.detail ?? res.status}` };
+    if (args.via !== "telegram" && args.via !== "sms") {
+      return { ok: false, status: "refused", message: `via must be 'telegram' or 'sms' (not defaulted): ${JSON.stringify(args.via)}` };
     }
-    return { ok: true, status: "ok", message: "sent" };
+    const res = await ctx.ownerChannel.sendText(message, args.via);
+    if (!res.ok) {
+      return { ok: false, status: res.status, message: `send failed on ${args.via}: ${res.detail ?? res.status}` };
+    }
+    return { ok: true, status: "ok", message: `sent on ${args.via}`, ...(res.detail ? { data: { detail: res.detail } } : {}) };
   },
 };
 

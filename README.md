@@ -1,8 +1,8 @@
 # Jarvis rebuild (agent-1)
 
 A clean rebuild of Jarvis. Cloudflare Workers +
-Durable Objects + D1 + R2 + Vectorize + Queues. One brain (the Durable Object) that text and
-voice both call. See `PROGRESS.md` for exactly what is built vs. faked vs. not-yet-built.
+Durable Objects + D1 + R2 + Vectorize (Queues come back with email). One brain (the Durable
+Object) that Telegram, SMS and voice all call. See `PROGRESS.md` for exactly what is built vs. faked vs. not-yet-built.
 
 Everything below is **Windows PowerShell** (Sid runs Windows 11; there is no Linux).
 
@@ -113,11 +113,18 @@ See `PROGRESS.md` for the exact, verified list. In short: text conversations, me
 recall, correct, forget, pin; meaning + literal search; automatic memory reviews when a
 conversation goes quiet and hourly), connected apps, the five confirmed actions with enforced
 confirmation and shadow mode, receipts, wake-ups (Durable Object alarm + hourly cron), backups to
-R2, the conversation archive, the school receiver, and **inbound phone calls** (Twilio
-ConversationRelay WebSocket on the Durable Object; owner PIN and guest PIN by voice or keypad —
-tested against fakes only, never on a live Twilio call yet). **Not built yet:** email in/out,
-Twilio outbound (Jarvis calling or texting), and the Windows PC agent. The five action tools say
-`not connected` rather than pretending.
+R2, the conversation archive, the school receiver, **inbound phone calls** (Twilio
+ConversationRelay WebSocket on the Durable Object; owner PIN and guest PIN by voice or keypad),
+**SMS as a second text channel** next to Telegram (same brain; replies go back on the channel you
+used), **Jarvis phoning you** (`call_place`), and **texting or one-way calling someone for you**
+after you confirm (`contact_on_behalf`). All the Twilio parts are tested against fakes only —
+none has run on a live Twilio number yet. **Not built yet:** email in/out, two-way calls to other
+people (`make_call` says `not connected`), and the Windows PC agent. The other action tools
+(spend money, send email, submit school work) say `not connected` rather than pretending.
+
+Searches have no hidden caps: leave `limit` off and Jarvis gets every match (paged with
+`offset`). The one ceiling left is Vectorize's own 100 results per meaning search, which the
+tool reports when it is hit.
 
 The vault export endpoint is `GET /vault/export` with header `x-vault-token`. Set the token:
 
@@ -130,13 +137,16 @@ To connect the phone number after deploy:
 
 1. In the Twilio Console, accept the **Predictive and Generative AI/ML Features Addendum**
    (Voice → Settings). ConversationRelay refuses calls until it is accepted.
-2. Point your Twilio number's Voice webhook at `https://<your-worker>.workers.dev/voice`
-   (HTTP POST).
+2. On your Twilio number (Phone Numbers → Manage → Active numbers → your number), set:
+   - **Voice → A call comes in:** Webhook, `https://<your-worker>.workers.dev/voice`, HTTP POST
+   - **Messaging → A message comes in:** Webhook, `https://<your-worker>.workers.dev/sms`, HTTP POST
 3. Set the phone secrets:
 
 ```powershell
 cd $HOME\jarvisrebuild
+wrangler secret put TWILIO_ACCOUNT_SID    # starts with AC, from the Twilio Console home page
 wrangler secret put TWILIO_AUTH_TOKEN
+wrangler secret put TWILIO_FROM_E164      # your Twilio number, e.g. +16135550999
 wrangler secret put OWNER_PHONE_E164      # your cell, e.g. +16135550123
 wrangler secret put OWNER_ACTION_PIN      # your 4-digit PIN for the five actions on a call
 wrangler secret put OWNER_PIN_PEPPER      # any long random string
@@ -144,6 +154,12 @@ wrangler secret put PUBLIC_ORIGIN         # exactly the origin in step 2, e.g. h
 ```
 
 `PUBLIC_ORIGIN` must match the address Twilio dials, character for character, because Twilio
-signs that exact URL and Jarvis refuses any call whose signature does not check out. On a call
-you can say your PIN or type it on the keypad (`*` clears, `#` sends early). Three wrong PINs lock
-PIN entry for the rest of that call; hang up and call back to try again.
+signs that exact URL and Jarvis refuses any call or text whose signature does not check out. It is
+also the address Jarvis gives Twilio when it phones you. On a call you can say your PIN or type it
+on the keypad (`*` clears, `#` sends early). Three wrong PINs lock PIN entry for the rest of that
+call; hang up and call back to try again.
+
+Texts from any number other than `OWNER_PHONE_E164` are ignored. Depending on your Twilio
+number's country and type, Twilio may require it to be registered for messaging (for example A2P
+10DLC for US numbers, or toll-free verification) before texts are delivered — if texts to or from
+Jarvis never arrive, check Messaging → Regulatory Compliance in the Twilio Console.

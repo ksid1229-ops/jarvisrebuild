@@ -8,6 +8,10 @@ export interface SystemPromptInput {
   pinnedFacts: Fact[];
   /** Sid can edit the persona by just telling Jarvis; stored and passed here. */
   personaOverride?: string;
+  /** The text medium of the current turn, when it is one of Sid's text messages. */
+  medium?: import("../types.js").TextMedium;
+  /** Which text channels exist and which Sid used last (for send_text's `via`). */
+  textChannels?: { available: import("../types.js").TextMedium[]; lastUsed?: import("../types.js").TextMedium };
 }
 
 const DEFAULT_PERSONA =
@@ -29,7 +33,16 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     input.channel === "voice"
       ? "You are on a PHONE CALL. Speak naturally and briefly, in spoken sentences — no lists, no markdown, " +
         "no headings. Say numbers as words where natural. Keep turns short so the caller can interrupt."
-      : "You are on TEXT (Telegram). You may be a little more structured, but stay concise.";
+      : input.medium === "sms"
+        ? "You are on TEXT (SMS). Plain text only — no markdown; keep it short, long replies cost several texts."
+        : input.medium === "telegram"
+          ? "You are on TEXT (Telegram). You may be a little more structured, but stay concise."
+          : "You are on TEXT. You may be a little more structured, but stay concise.";
+  const textChannels = input.textChannels
+    ? `TEXT CHANNELS: set up: ${input.textChannels.available.join(", ") || "none"}. ` +
+      `Sid last texted via: ${input.textChannels.lastUsed ?? "unknown (never)"}. ` +
+      "A reply goes back on the channel of the current message; send_text needs you to pick one."
+    : "";
 
   return [
     persona,
@@ -52,7 +65,8 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
       "You never hide those from him. (Only non-Sid readers get redaction.)",
     "",
     `CURRENT TIME: ${local} (${input.timezone}). In UTC: ${input.nowIso}.`,
-    `CHANNEL: ${input.channel}. ${channelGuide}`,
+    `CHANNEL: ${input.channel}${input.medium ? ` (${input.medium})` : ""}. ${channelGuide}`,
+    ...(textChannels ? [textChannels] : []),
     `SHADOW MODE: ${input.shadow ? "ON — action tools will NOT execute; they log what they would do." : "off — actions execute after confirmation."}`,
     "",
     "SID'S CORE PROFILE (pinned facts):",

@@ -34,6 +34,14 @@ import { D1WakeupsRepo } from "./scheduler/wakeups-repo.js";
 import { D1HeartbeatRepo } from "./plumbing/heartbeat.js";
 import { COLLECTOR_ENVELOPE_HEADER, handleSchoolRequest } from "./school/routes.js";
 import { schoolVaultSnapshot } from "./school/school-tools.js";
+import { acceptSmsWebhook, EMPTY_TWIML, smsEventText, type AcceptedSms } from "./router/sms-webhook.js";
+import { TwilioRestClient } from "./channels/twilio-rest.js";
+import { OwnerTextChannels, type MediumSender } from "./channels/owner-text-channels.js";
+import { describeCallOutcome, recallOutbound } from "./channels/phone.js";
+import type { TextMedium } from "./types.js";
+
+/** Settings key: the text medium Sid last messaged from (a recorded fact). */
+const LAST_TEXT_MEDIUM = "last_text_medium";
 
 /**
  * Worker router. Receives Telegram webhooks, verifies them (fail closed), and
@@ -45,7 +53,7 @@ import { schoolVaultSnapshot } from "./school/school-tools.js";
  * state on eviction. Nothing here fakes success either way.
  */
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: { waitUntil(p: Promise<unknown>): void }): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
@@ -78,6 +86,41 @@ export default {
         headers: { "content-type": "application/json" },
       });
       return resp;
+    }
+
+    // Twilio inbound SMS/MMS — Sid's second text channel. Verified (fail closed)
+    // and owner-checked here; Twilio gets an empty TwiML answer immediately (its
+    // webhook times out at 15 s, a model turn can take longer) and the turn runs
+    // in the background, replying over the REST API on SMS.
+    if (url.pathname === "/sms" && request.method === "POST") {
+      const form = await request.formData().catch(() => null);
+      if (!form) return json({ ok: false, reason: "expected form-encoded body" }, 400);
+      const params: Record<string, string> = {};
+      form.forEach((v, k) => {
+        params[k] = String(v);
+      });
+      const decision = await acceptSmsWebhook(params, request.headers.get("x-twilio-signature"), request.url, env);
+      if (!decision.sms) {
+        if (decision.status === 200) {
+          return new Response(EMPTY_TWIML, { status: 200, headers: { "content-type": "text/xml" } });
+        }
+        return json({ ok: false, reason: decision.reason }, decision.status);
+      }
+      const ns = env.JARVIS as DurableObjectNamespace | undefined;
+      if (!ns) return json({ ok: false, reason: "JARVIS DO binding missing" }, 500);
+      if (!env.OWNER_CHAT_ID) return json({ ok: false, reason: "OWNER_CHAT_ID not configured" }, 500);
+      if (!ctx) return json({ ok: false, reason: "no execution context to run the turn in" }, 500);
+      const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+      ctx.waitUntil(
+        stub
+          .fetch("https://do/sms", {
+            method: "POST",
+            body: JSON.stringify(decision.sms),
+            headers: { "content-type": "application/json" },
+          })
+          .catch((e: unknown) => console.error("sms turn failed:", (e as Error).message)),
+      );
+      return new Response(EMPTY_TWIML, { status: 200, headers: { "content-type": "text/xml" } });
     }
 
     // Apps give Jarvis senses: an authenticated event endpoint. The app posts
@@ -127,6 +170,65 @@ export default {
         status: 200,
         headers: { "content-type": "text/xml" },
       });
+    }
+
+    // Jarvis's own outbound call to Sid (call_place) was answered. Twilio fetches
+    // this with machine detection results. A person → the same ConversationRelay
+    // as inbound calls, marked outbound. Voicemail/fax → hang up without leaving
+    // a message (anyone might hear it); the status callback tells Jarvis.
+    if (url.pathname === "/voice/outbound" && request.method === "POST") {
+      const params = await formParams(request);
+      if (!params) return json({ ok: false, reason: "expected form-encoded body" }, 400);
+      const ok = await verifyTwilioSignatureAny(
+        env.TWILIO_AUTH_TOKEN,
+        twilioSignedUrlCandidates(request.url, env.PUBLIC_ORIGIN),
+        params,
+        request.headers.get("x-twilio-signature"),
+      );
+      if (!ok) return json({ ok: false, reason: "bad twilio signature" }, 403);
+      const answeredBy = params.AnsweredBy ?? "";
+      if (/^(machine|fax)/.test(answeredBy)) {
+        return new Response('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', {
+          status: 200,
+          headers: { "content-type": "text/xml" },
+        });
+      }
+      const wsOrigin = (env.PUBLIC_ORIGIN ?? url.origin).replace(/^http/, "ws");
+      const ref = url.searchParams.get("ref") ?? "";
+      const wsUrl =
+        `${wsOrigin}/voice/ws?from=${encodeURIComponent(params.To ?? "")}` +
+        `&callSid=${encodeURIComponent(params.CallSid ?? "")}&dir=out&ref=${encodeURIComponent(ref)}`;
+      return new Response(buildConnectTwiml(wsUrl), { status: 200, headers: { "content-type": "text/xml" } });
+    }
+
+    // Final status of an outbound call (call_place, or a call on Sid's behalf).
+    // Signed; forwarded to the DO, which tells Jarvis when there's something to
+    // act on (no answer, voicemail, how a message call went).
+    if (url.pathname === "/voice/status" && request.method === "POST") {
+      const params = await formParams(request);
+      if (!params) return json({ ok: false, reason: "expected form-encoded body" }, 400);
+      const ok = await verifyTwilioSignatureAny(
+        env.TWILIO_AUTH_TOKEN,
+        twilioSignedUrlCandidates(request.url, env.PUBLIC_ORIGIN),
+        params,
+        request.headers.get("x-twilio-signature"),
+      );
+      if (!ok) return json({ ok: false, reason: "bad twilio signature" }, 403);
+      const ns = env.JARVIS as DurableObjectNamespace | undefined;
+      if (!ns) return json({ ok: false, reason: "JARVIS DO binding missing" }, 500);
+      if (!env.OWNER_CHAT_ID) return json({ ok: false, reason: "OWNER_CHAT_ID not configured" }, 500);
+      const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+      const body = JSON.stringify({
+        ref: url.searchParams.get("ref") ?? "",
+        callStatus: params.CallStatus ?? "",
+        ...(params.AnsweredBy ? { answeredBy: params.AnsweredBy } : {}),
+      });
+      const run = stub
+        .fetch("https://do/voice/status", { method: "POST", body, headers: { "content-type": "application/json" } })
+        .catch((e: unknown) => console.error("call outcome failed:", (e as Error).message));
+      if (ctx) ctx.waitUntil(run);
+      else await run;
+      return new Response(null, { status: 204 });
     }
 
     // ConversationRelay WebSocket. Twilio signs the handshake (X-Twilio-Signature
@@ -194,6 +296,16 @@ export default {
   },
 };
 
+async function formParams(request: Request): Promise<Record<string, string> | null> {
+  const form = await request.formData().catch(() => null);
+  if (!form) return null;
+  const params: Record<string, string> = {};
+  form.forEach((v, k) => {
+    params[k] = String(v);
+  });
+  return params;
+}
+
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 }
@@ -242,7 +354,10 @@ export class JarvisDurableObject {
     const backupBucket = this.env.BACKUP ? new R2BucketAdapter(this.env.BACKUP as R2Like) : undefined;
     const storage = this.state.storage as DurableObjectStorageLike;
 
-    const ownerChannel = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", chatId);
+    const ownerChannel = this.ownerChannels(chatId, async () => {
+      const v = await this.built?.settings.get(LAST_TEXT_MEDIUM);
+      return v === "telegram" || v === "sms" ? v : undefined;
+    });
 
     // Production storage: D1 when bound, in-memory otherwise (local dev).
     const db = this.env.DB as D1Db | undefined;
@@ -282,8 +397,46 @@ export class JarvisDurableObject {
       },
       ...(this.env.OWNER_ACTION_PIN ? { ownerPin: this.env.OWNER_ACTION_PIN } : {}),
       ...(this.env.OWNER_PIN_PEPPER ? { pinPepper: this.env.OWNER_PIN_PEPPER } : {}),
+      phone: {
+        rest: this.twilio(),
+        ...(this.env.OWNER_PHONE_E164?.trim() ? { ownerPhone: this.env.OWNER_PHONE_E164.trim() } : {}),
+        ...(this.env.PUBLIC_ORIGIN?.trim() ? { publicOrigin: this.env.PUBLIC_ORIGIN.trim() } : {}),
+      },
+      textChannels: async () => {
+        const last = await this.built?.settings.get(LAST_TEXT_MEDIUM);
+        return {
+          available: ownerChannel.available(),
+          ...(last === "telegram" || last === "sms" ? { lastUsed: last } : {}),
+        };
+      },
     });
     return this.built;
+  }
+
+  /**
+   * Sid's text channels. Telegram when its bot token is set; SMS when Twilio
+   * (account SID, auth token, from-number) and OWNER_PHONE_E164 are set.
+   */
+  private ownerChannels(chatId: string, lastUsed: () => Promise<TextMedium | undefined>): OwnerTextChannels {
+    const media: Partial<Record<TextMedium, MediumSender>> = {};
+    if (this.env.TELEGRAM_BOT_TOKEN?.trim()) {
+      const tg = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN, chatId);
+      media.telegram = (m) => tg.sendText(m);
+    }
+    const twilio = this.twilio();
+    const ownerPhone = this.env.OWNER_PHONE_E164?.trim();
+    if (twilio.missing() === null && ownerPhone) {
+      media.sms = (m) => twilio.sendSms(ownerPhone, m);
+    }
+    return new OwnerTextChannels(media, lastUsed);
+  }
+
+  private twilio(): TwilioRestClient {
+    return new TwilioRestClient({
+      accountSid: this.env.TWILIO_ACCOUNT_SID,
+      authToken: this.env.TWILIO_AUTH_TOKEN,
+      fromE164: this.env.TWILIO_FROM_E164,
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -303,6 +456,16 @@ export class JarvisDurableObject {
     if (url.pathname === "/voice/ws") {
       return this.handleVoiceSocket(url);
     }
+    if (url.pathname === "/voice/status") {
+      return this.handleCallOutcome(request);
+    }
+    if (url.pathname === "/sms") {
+      const sms = (await request.json()) as AcceptedSms;
+      return this.handleOwnerText(this.env.OWNER_CHAT_ID ?? "", "sms", {
+        text: smsEventText(sms),
+        provenance: sms.provenance,
+      });
+    }
     const update = (await request.json()) as {
       chatId: string;
       text: string;
@@ -310,25 +473,38 @@ export class JarvisDurableObject {
       callbackData?: string;
       attachments?: string[];
     };
+    return this.handleOwnerText(update.chatId, "telegram", { text: eventTextFor(update), provenance: update.provenance });
+  }
 
+  /**
+   * One owner text message, from either medium, into the one brain. The reply
+   * (or the error) goes back on the medium it came from; that medium is
+   * recorded as the one Sid last used.
+   */
+  private async handleOwnerText(
+    chatId: string,
+    medium: TextMedium,
+    msg: { text: string; provenance: JarvisEvent["provenance"] },
+  ): Promise<Response> {
     let built;
     try {
-      built = this.ensureBuilt(update.chatId);
+      built = this.ensureBuilt(chatId);
     } catch (e) {
       if (e instanceof MissingModelKeyError) {
-        // Say so plainly. Tell Sid over Telegram; do not pretend to answer.
-        const ch = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", update.chatId);
-        await ch.sendText("I have no model configured (DEEPSEEK_API_KEY is unset), so I can't answer. Nothing was faked.");
+        // Say so plainly, on the medium he used; do not pretend to answer.
+        const ch = this.ownerChannels(chatId, async () => undefined);
+        await ch.sendText("I have no model configured (DEEPSEEK_API_KEY is unset), so I can't answer. Nothing was faked.", medium);
         return json({ ok: false, reason: "no model key" }, 200);
       }
       throw e;
     }
+    await built.settings.set(LAST_TEXT_MEDIUM, medium);
 
     const event: JarvisEvent = {
       channel: "text",
       trigger: "text",
-      provenance: update.provenance,
-      text: eventTextFor(update),
+      provenance: { ...msg.provenance, medium },
+      text: msg.text,
       eventId: newId("evt"),
     };
 
@@ -336,14 +512,12 @@ export class JarvisDurableObject {
 
     // Deliver the reply. A failed send is surfaced in the response, not hidden.
     if (result.error) {
-      const ch = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", update.chatId);
-      await ch.sendText(`Something went wrong reaching the model: ${result.error}`);
+      await built.ownerChannel.sendText(`Something went wrong reaching the model: ${result.error}`, medium);
       return json({ ok: false, reason: result.error }, 200);
     }
     if (result.reply.trim() !== "") {
-      const ch = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", update.chatId);
-      const send = await ch.sendText(result.reply);
-      return json({ ok: send.ok, sendStatus: send.status });
+      const send = await built.ownerChannel.sendText(result.reply, medium);
+      return json({ ok: send.ok, sendStatus: send.status, via: send.via });
     }
     return json({ ok: true, note: "no reply text (model may have acted via tools or stayed quiet)" });
   }
@@ -428,7 +602,47 @@ export class JarvisDurableObject {
    * the per-call session — role, PIN state, guest transcript — lives in memory
    * for exactly the length of the call and vanishes with it.
    */
-  private handleVoiceSocket(url: URL): Response {
+  /** An outbound call ended: tell Jarvis when there's something to act on. */
+  private async handleCallOutcome(request: Request): Promise<Response> {
+    const body = (await request.json()) as { ref: string; callStatus: string; answeredBy?: string };
+    const ownerId = this.env.OWNER_CHAT_ID ?? "";
+    let built;
+    try {
+      built = this.ensureBuilt(ownerId);
+    } catch (e) {
+      if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
+      throw e;
+    }
+    const rec = await recallOutbound(built.settings, body.ref);
+    await built.receipts.log({
+      tool: "call_outcome",
+      input: { ref: body.ref, purpose: rec?.purpose ?? null },
+      result: { callStatus: body.callStatus, answeredBy: body.answeredBy ?? null },
+      trigger: "wakeup",
+      performed: false,
+      status: body.callStatus || "unknown",
+    });
+    const text = describeCallOutcome(rec, body.ref, body.callStatus, body.answeredBy);
+    if (text === null) return json({ ok: true, note: "answered; nothing to report" });
+    const wake = await built.agent.handle({
+      channel: "text",
+      trigger: "wakeup",
+      eventId: newId("evt"),
+      text,
+      provenance: {
+        channel: "text",
+        isOwner: false,
+        isForwarded: false,
+        isPrivate: true,
+        sourceRef: `twilio:call-outcome:${body.ref}`,
+        sourceType: "call",
+      },
+    });
+    if (!wake.error && wake.reply.trim() !== "") await built.ownerChannel.sendText(wake.reply);
+    return json({ ok: !wake.error });
+  }
+
+  private async handleVoiceSocket(url: URL): Promise<Response> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -459,7 +673,13 @@ export class JarvisDurableObject {
       return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: CfWebSocket });
     }
 
+    // Outbound (call_place): the signed URL carries dir=out and the call's ref.
+    const outbound = url.searchParams.get("dir") === "out";
+    const outboundRec = outbound
+      ? await recallOutbound(built.settings, url.searchParams.get("ref") ?? "")
+      : undefined;
     const relay = new VoiceRelay({
+      ...(outbound ? { direction: "outbound" as const, outboundReason: outboundRec?.text ?? null } : {}),
       agent: built.agent,
       guests: built.guests,
       receipts: built.receipts,
@@ -554,8 +774,8 @@ export class JarvisDurableObject {
           },
         });
         if (!wake.error && wake.reply.trim() !== "") {
-          const ch = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", ownerId);
-          await ch.sendText(wake.reply);
+          // Not a reply to anything Sid sent: the channel uses his last medium.
+          await built.ownerChannel.sendText(wake.reply);
         }
       } catch (e) {
         if (!(e instanceof MissingModelKeyError)) throw e;

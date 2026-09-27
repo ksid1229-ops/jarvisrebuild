@@ -48,8 +48,18 @@ export interface VoiceRelayDeps {
   ownerPhoneE164: string | undefined;
   ownerPinVerifier: OwnerPinVerifier | undefined;
   pinPepper: string | undefined;
-  /** Caller number from the Twilio-signed WebSocket URL. */
+  /**
+   * The other party's number from the Twilio-signed WebSocket URL: the caller
+   * on an inbound call, the person dialed on an outbound one.
+   */
   signedFrom: string;
+  /** "outbound" when Jarvis placed the call (call_place). Default inbound. */
+  direction?: "inbound" | "outbound";
+  /**
+   * Outbound only: why Jarvis placed the call, from its record. null = the
+   * record was not found (said so to the brain, never invented).
+   */
+  outboundReason?: string | null;
   /** CallSid from the Twilio-signed WebSocket URL. */
   signedCallSid: string;
   send(msg: RelayOutbound): void;
@@ -126,16 +136,32 @@ export class VoiceRelay {
 
   private async onSetup(msg: Record<string, unknown>): Promise<void> {
     if (this.session) return; // a second setup changes nothing
-    const from = String(msg.from ?? "");
+    const outbound = this.d.direction === "outbound";
+    // Inbound: the party is the caller (from). Outbound: the party is who we dialed (to).
+    const party = String((outbound ? msg.to : msg.from) ?? "");
     const callSid = String(msg.callSid ?? "");
     // The signed URL is the trust anchor. A setup that disagrees with it ends the call.
-    if (from !== this.d.signedFrom || (this.d.signedCallSid !== "" && callSid !== this.d.signedCallSid)) {
+    if (party !== this.d.signedFrom || (this.d.signedCallSid !== "" && callSid !== this.d.signedCallSid)) {
       await this.receipt("call_start", { callSid, note: "setup did not match the signed URL" }, "refused", false);
       this.endCall("setup mismatch");
       return;
     }
     this.session = await identifyCaller(this.d.signedFrom, this.d.ownerPhoneE164, this.d.guests);
-    await this.receipt("call_start", { callSid, role: this.session.role, guestId: this.session.guestId ?? null }, "ok", true);
+    await this.receipt(
+      "call_start",
+      { callSid, role: this.session.role, guestId: this.session.guestId ?? null, direction: outbound ? "outbound" : "inbound" },
+      "ok",
+      true,
+    );
+    if (outbound) {
+      // Jarvis rang; it speaks first, starting from why it called.
+      const why =
+        this.d.outboundReason === null || this.d.outboundReason === undefined
+          ? "The record of why you called was not found — tell Sid that honestly rather than guess."
+          : `Why you called: ${this.d.outboundReason}`;
+      const who = this.session.role === "owner" ? "Sid" : "The person you dialed (not recognised as Sid)";
+      await this.runTurn(`[outbound call] ${who} picked up the call you placed. ${why} Speak first.`);
+    }
   }
 
   private async onPrompt(msg: Record<string, unknown>): Promise<void> {

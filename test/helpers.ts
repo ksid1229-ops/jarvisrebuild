@@ -30,6 +30,8 @@ export function makeHarness(
     embeddings?: import("../src/memory/embeddings.js").EmbeddingProvider;
     stores?: import("../src/jarvis/build.js").BuildInput["stores"];
     setAlarm?: import("../src/scheduler/wakeup-scheduler.js").SetAlarm;
+    phone?: import("../src/jarvis/build.js").BuildInput["phone"];
+    textChannels?: import("../src/jarvis/build.js").BuildInput["textChannels"];
   } = {},
 ): Harness {
   const clock = opts.clock ?? new FixedClock();
@@ -53,6 +55,8 @@ export function makeHarness(
     ...(opts.bucket ? { bucket: opts.bucket } : {}),
     ...(opts.stores ? { stores: opts.stores } : {}),
     ...(opts.setAlarm ? { setAlarm: opts.setAlarm } : {}),
+    ...(opts.phone ? { phone: opts.phone } : {}),
+    ...(opts.textChannels ? { textChannels: opts.textChannels } : {}),
   });
   return {
     ...built,
@@ -85,6 +89,7 @@ export function makeHarness(
         wakeups: built.wakeups,
         archive: built.archive,
         school: built.school,
+        phone: built.phone,
       };
     },
   };

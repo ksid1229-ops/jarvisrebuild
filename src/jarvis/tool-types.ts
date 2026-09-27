@@ -18,9 +18,21 @@ export interface ToolResult {
 }
 
 /** A channel that can actually deliver a message to Sid. */
+export interface OwnerSendResult {
+  ok: boolean;
+  status: string;
+  detail?: string;
+  /** The text channel(s) the message actually went out on. */
+  via?: import("../types.js").TextMedium[];
+}
+
 export interface OwnerChannel {
-  /** Returns a status; never fabricates success. */
-  sendText(message: string): Promise<{ ok: boolean; status: string; detail?: string }>;
+  /**
+   * Text Sid. `via` names the medium (telegram or sms); without it the channel
+   * uses the medium Sid last texted from (see OwnerTextChannels). Returns a
+   * status; never fabricates success.
+   */
+  sendText(message: string, via?: import("../types.js").TextMedium): Promise<OwnerSendResult>;
 }
 
 export interface ToolContext {
@@ -69,6 +81,8 @@ export interface ToolContext {
   archive?: import("../plumbing/archive.js").ArchiveService;
 
   // ---- School (D1-backed evidence + collector keys + request queue) ----
+  /** Twilio outbound (SMS + calls). Absent => phone tools return not_connected. */
+  phone?: import("../channels/phone.js").PhoneServices;
   /** Present when a database is wired. Absent => school tools fail closed. */
   school?: import("../school/school-tools.js").SchoolServices;
 }

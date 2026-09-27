@@ -76,7 +76,7 @@ describe("Phase 3: connected apps (the plug)", () => {
     // The model, on the wake-up, decides to notify Sid via send_text.
     const h = makeHarness(
       [
-        { content: "", toolCalls: [fakeToolCall("send_text", { message: "Heads up: testapp says something changed." })] },
+        { content: "", toolCalls: [fakeToolCall("send_text", { message: "Heads up: testapp says something changed.", via: "telegram" })] },
         { content: "" },
       ],
       { makeConnector },

@@ -79,8 +79,11 @@ export interface AgentDeps {
   wakeups?: import("../scheduler/wakeup-scheduler.js").WakeupScheduler;
   archive?: import("../plumbing/archive.js").ArchiveService;
   school?: import("../school/school-tools.js").SchoolServices;
+  phone?: import("../channels/phone.js").PhoneServices;
   /** Called after each live owner exchange (text or call) — arms the quiet-conversation review. */
   afterOwnerTurn?: () => Promise<void>;
+  /** Which text channels are set up and which Sid used last (shown in the prompt). */
+  textChannels?: () => Promise<{ available: import("../types.js").TextMedium[]; lastUsed?: import("../types.js").TextMedium }>;
 }
 
 /**
@@ -116,6 +119,7 @@ export class AgentCore {
       wakeups: this.d.wakeups,
       archive: this.d.archive,
       school: this.d.school,
+      phone: this.d.phone,
     };
   }
 
@@ -145,7 +149,7 @@ export class AgentCore {
 
     const recent = await this.d.conversation.recent();
     const messages: ChatMessage[] = [
-      { role: "system", content: await this.currentSystemPrompt(event.channel) },
+      { role: "system", content: await this.currentSystemPrompt(event.channel, event.provenance.medium) },
       ...recent.map((m): ChatMessage => ({ role: m.role, content: m.content })),
     ];
     if (!interactive) {
@@ -351,8 +355,11 @@ export class AgentCore {
     return { reply, iterations: rounds, toolCalls };
   }
 
-  private async currentSystemPrompt(channel: Channel): Promise<string> {
+  private async currentSystemPrompt(channel: Channel, medium?: import("../types.js").TextMedium): Promise<string> {
+    const textChannels = this.d.textChannels ? await this.d.textChannels() : undefined;
     return buildSystemPrompt({
+      ...(medium ? { medium } : {}),
+      ...(textChannels ? { textChannels } : {}),
       nowIso: this.d.clock.nowIso(),
       timezone: this.d.timezone,
       channel,

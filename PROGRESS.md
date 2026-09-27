@@ -511,3 +511,153 @@ Built by:
 - Knowledge cutoff: UNKNOWN
 - Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
 - Phases completed this session: audit response — Phase 4 (PIN confirm fix), Phase 5 (guest PIN, signature URL, PIN lockout, inbound ConversationRelay WebSocket loop), Phase 1 (Telegram split/caption, DeepSeek empty-tools), Phase 7 (wrangler queue removed)
+
+## Session: no hidden caps, vault labels, SMS channel, Twilio outbound (2026-09-26, branch arena/01a0e025-jarvisrebuild)
+
+Sid's answers this session: keep the 20-min quiet-review delay; forgotten facts stay in the vault
+export, labelled; "jarvis should get as much as he needs to do what he wants" (searches); the text
+channel is **both** Telegram and Twilio SMS (one brain); the vault export includes school data.
+
+### 1. No hidden caps (commit 2c44cb0)
+- `history_search`, `memory_search`, `archive_search`, `memory_list` (new) and the school read
+  tools: `limit` is optional — **omitted = every match** — with `offset` paging and
+  `total`/`nextOffset` in the result. A bad limit (0, negative, not a number) is refused, never
+  silently replaced. The old 50/200/500 caps are gone.
+- The one ceiling left is outside our code: Vectorize returns at most 100 ranked matches per
+  query. `memory_search` reports `indexCeiling: 100` when it is hit; `memory_list` and
+  `history_search` read D1 directly and have no ceiling.
+- `school_changes_since` reads **every** batch after the timestamp plus the newest good baseline
+  before it (it used to read the newest 10 and could miss changes in a busy stretch).
+- **Risk, flagged:** with no cap, one huge result could make a single model request very large.
+  Nothing guards that yet; the model can page with `limit`/`offset`, and the tool descriptions
+  say so.
+
+### 2. Vault export (commit 2c44cb0)
+- Every fact note carries `status: active | forgotten | corrected | expired` and
+  `superseded_by`. Forgotten facts stay in the vault, labelled (Sid's call).
+- School notes: `jarvis/school/courses.md`, `jarvis/school/items/<id>.md`,
+  `jarvis/school/grades/<id>.md`, each with `evidence_as_of`. A missing D2L due date is written as
+  `unknown`, never "no deadline". Undecodable stored batches are counted (`schoolUnreadable`),
+  not dropped silently.
+
+### 3. SMS: the second text channel
+- `POST /sms` (Twilio Messaging webhook). Verified with the Twilio signature (fail closed: no
+  auth token → 403). `OWNER_PHONE_E164` unset → 500. Any other sender → empty TwiML, ignored:
+  strangers never reach the brain by text. Sid's number is trustworthy here because the request
+  is Twilio-signed, and the five actions still need his YES/tap.
+- Twilio times its webhook out at 15 s and a model turn can take longer, so the Worker answers
+  with empty TwiML at once and runs the turn in `ctx.waitUntil`. The reply goes out through the
+  REST API (`src/channels/twilio-rest.ts`, 1600-char parts at line/space boundaries, never
+  mid-emoji; a failure part-way says how many parts got through).
+- MMS attachments are named by content type ("cannot open attachments yet"), never pretended-read.
+- **One brain, which medium?** (`src/channels/owner-text-channels.ts`)
+  - A reply goes back on the medium of the message. Each text turn records its medium in
+    provenance, and the DO records it as `last_text_medium`.
+  - `send_text` now **requires** `via: telegram | sms`; the model picks. It is refused, never
+    defaulted, when missing. The prompt's `TEXT CHANNELS:` line says which are set up and which
+    Sid used last.
+  - Code-sent messages (confirmation requests) go on the current turn's medium. When there is
+    none (a wake-up), they go on the medium Sid last used, and the result says so. With no
+    history, they go on every configured medium, and a partial failure is reported as `partial`.
+  - SMS turns tell the model: plain text, no markdown, keep it short.
+
+### 4. Twilio outbound
+- **`call_place(reason)`** — Jarvis rings Sid. It dials only `OWNER_PHONE_E164` (there is no
+  `to`).
+  - **Decision, flagged:** it is *not* one of the five confirmed actions. It can only reach Sid
+    himself, and texting "may I call you?" first defeats a call.
+  - Twilio's Calls API with `MachineDetection=Enable` fetches `/voice/outbound`. A person gets the
+    same ConversationRelay WebSocket as inbound calls, marked `dir=out`. The relay then checks
+    setup `to` (not `from`) against the signed number and runs an opening turn:
+    "[outbound call] Sid picked up… Why you called: …". Jarvis speaks first, and the five actions
+    still need the PIN.
+  - On voicemail or fax it **hangs up without leaving a message**, because anyone might hear a
+    voicemail.
+  - The reason is kept in settings under `outbound_call:<ref>`. A missing record is said plainly,
+    never guessed.
+- **`contact_on_behalf`** (confirmed action) is now real.
+  - `text` → SMS to the E.164 number with exactly the confirmed message.
+  - `call` → a one-way call that speaks exactly the confirmed message via `<Say>`
+    (XML-escaped), with `MachineDetection=DetectMessageEnd` so voicemail gets it after the beep.
+  - It comes from Jarvis's Twilio number, not Sid's phone; the description tells the model to say
+    who it's from.
+  - "Sent" means Twilio accepted it; delivery is not confirmed, and the result says that.
+- **Call outcomes:** `/voice/status` is signed. Its result is receipted (`call_outcome`) and wakes
+  Jarvis with a `[call outcome]` message (trigger `wakeup`, which avoids a migration on the
+  receipts CHECK). No wake when Sid answered; a wake for no-answer, voicemail, and every
+  `contact_on_behalf` call result. Jarvis then decides whether to text him.
+- **`make_call`** (a two-way conversation with someone else on Sid's behalf) stays
+  `not_connected`. It needs its own brain setup — what it may share, and a transcript back to Sid
+  — which is not built. `contact_on_behalf` `call` covers one-way messages.
+- No new secret *names*: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_E164`,
+  `OWNER_PHONE_E164`, `PUBLIC_ORIGIN` (all were already in `env.ts`; README now lists all five).
+
+### Divergences from Sid's roadmap (flagged)
+- Roadmap Phase 1 lists Queues. They were removed in 59d0dd8 (nothing used them) and come back
+  with the email pipeline (Email Worker → R2 → `emails` row → Queue → wake).
+- `call_place` is unconfirmed (see above).
+
+### Not run live
+Nothing Twilio has touched a real number: SMS in/out, call_place, message calls, status callbacks
+and the outbound relay are all tested against fakes. Unknowns for the first live test:
+- Whether `AnsweredBy` arrives on the status callback for `DetectMessageEnd` calls. It is
+  optional in code, and the outcome reads fine without it.
+- Messaging registration requirements for Sid's Twilio number.
+
+### Files
+- New:
+  - `src/channels/{twilio-rest,owner-text-channels,phone,phone-tools}.ts`
+  - `src/router/sms-webhook.ts`
+  - `test/sms-phone.test.ts` (24 tests)
+  - `test/limits-vault.test.ts` (7 tests)
+- Changed:
+  - `src/index.ts`: `/sms`, `/voice/outbound`, `/voice/status`, `handleOwnerText`,
+    `handleCallOutcome`, `ownerChannels`
+  - `src/voice/relay.ts`: direction and the opening turn
+  - `src/jarvis/{core-tools,system-prompt,agent-core,build,tool-types}.ts`
+  - `src/confirmations/{gate,action-tools}.ts`
+  - `src/types.ts`: `TextMedium`, `provenance.medium`
+  - `src/router/telegram-webhook.ts`
+  - `README.md`
+
+### Tests and mutation sweeps
+- 201/201 pass, and tsc is clean.
+- **Caps and vault (10 faults, all red):**
+  - history cap back
+  - D1 LIMIT default
+  - memory_search cap
+  - hidden ceiling
+  - archive cap
+  - school 10-batch window (red only after the test was strengthened to two successive moves — a
+    single move is still visible with 10 batches plus the baseline)
+  - school limit default
+  - vault drops forgotten facts
+  - wrong vault status
+  - school vault notes missing
+- **SMS and phone (20 faults, all red):**
+  - skip signature; any sender is owner; medium dropped
+  - no split; continue after a failed part; no config check; surrogate cut
+  - lastUsed ignored; partial reported as ok
+  - send_text defaults via; gate ignores medium
+  - contact not confirmable; no readiness check; no AMD
+  - call_place: no origin check; not remembered
+  - voicemail silent; relay checks `from` on outbound; no opening turn
+  - no prompt channels line
+
+### Still to rebuild
+- Email in/out, with Queues.
+- The Windows PC agent and vault sync script.
+- `spend_money` via PC autofill.
+- Two-way `make_call`.
+- `resetAlarm()` on DO start.
+- A live check of the wrangler bindings.
+
+## Signature (this session, SMS + outbound)
+
+Built by:
+- Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; not disclosed for signing)
+- Company that made you: UNKNOWN
+- Reasoning / effort level (if known): UNKNOWN
+- Knowledge cutoff: UNKNOWN
+- Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
+- Phases completed this session: Phase 2 (uncapped search, memory_list, vault labels), Phase 7 (vault school notes), Phase 1 (SMS second channel), Phase 5 (call_place, outbound relay, call outcomes), Phase 4 (contact_on_behalf wired to Twilio)

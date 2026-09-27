@@ -59,7 +59,7 @@ describe("Phase 6: daily rhythm", () => {
     // Model, on the hourly check, decides to text Sid a digest.
     const h = makeHarness([
       { content: "" }, // (no due wake-up handling text)
-      { content: "", toolCalls: [fakeToolCall("send_text", { message: "Morning digest: nothing urgent." })] },
+      { content: "", toolCalls: [fakeToolCall("send_text", { message: "Morning digest: nothing urgent.", via: "sms" })] },
       { content: "" },
     ]);
     await h.wakeups.schedule("2026-09-26T00:00:00.000Z", "past-due reminder"); // already due

@@ -21,7 +21,12 @@ export interface Provenance {
   sourceRef: string;
   /** conversation | call | email | app */
   sourceType: "conversation" | "call" | "email" | "app";
+  /** Which of Sid's text channels this arrived on (text turns only). Replies go back on it. */
+  medium?: TextMedium;
 }
+
+/** Sid's two text channels (2026-09-26: "both, one brain"). */
+export type TextMedium = "telegram" | "sms";
 
 // ---- Memory ----
 

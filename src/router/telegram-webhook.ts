@@ -86,6 +86,7 @@ export function verifyTelegramWebhook(
     isPrivate,
     sourceRef: `telegram:${chatId}:${messageId}`,
     sourceType: "conversation",
+    medium: "telegram",
   };
 
   return {

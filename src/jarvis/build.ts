@@ -39,6 +39,9 @@ import { CollectorKeys } from "../school/collector-keys.js";
 import { EvidenceStore } from "../school/evidence-store.js";
 import { SchoolRequests } from "../school/school-requests.js";
 import { schoolTools, type SchoolServices } from "../school/school-tools.js";
+import { callPlace } from "../channels/phone-tools.js";
+import type { PhoneOut, PhoneServices } from "../channels/phone.js";
+import type { TextMedium } from "../types.js";
 
 export interface BuildInput {
   model: Model;
@@ -85,9 +88,15 @@ export interface BuildInput {
    * absent the school tools fail closed with not_connected.
    */
   db?: D1Db;
+  /** Twilio outbound (SMS + calls). Absent => phone tools return not_connected. */
+  phone?: { rest: PhoneOut; ownerPhone?: string; publicOrigin?: string };
+  /** Which text channels exist and which Sid used last (shown in the prompt). */
+  textChannels?: () => Promise<{ available: TextMedium[]; lastUsed?: TextMedium }>;
 }
 
 export interface BuiltJarvis {
+  ownerChannel: OwnerChannel;
+  phone?: PhoneServices;
   agent: AgentCore;
   dispatcher: ToolDispatcher;
   facts: FactsStore;
@@ -130,6 +139,10 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
       }
     : undefined;
 
+  const phone: PhoneServices | undefined = input.phone
+    ? { rest: input.phone.rest, ownerPhone: input.phone.ownerPhone, publicOrigin: input.phone.publicOrigin, settings }
+    : undefined;
+
   const dispatcher = new ToolDispatcher([
     ...memoryTools,
     ...actionTools,
@@ -139,6 +152,7 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     ...(school ? schoolTools : []),
     archiveSearch,
     sendText,
+    callPlace,
     receiptsQuery,
     settingsUpdate,
   ]);
@@ -200,6 +214,8 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     wakeups,
     archive,
     ...(school ? { school } : {}),
+    ...(phone ? { phone } : {}),
+    ...(input.textChannels ? { textChannels: input.textChannels } : {}),
     ...(input.pinPepper ? { pinPepper: input.pinPepper } : {}),
     // Each live exchange pushes the quiet-conversation memory review later.
     afterOwnerTurn: async () => {
@@ -219,6 +235,8 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
 
   return {
     agent,
+    ownerChannel: input.ownerChannel,
+    ...(phone ? { phone } : {}),
     dispatcher,
     facts,
     conversation,
