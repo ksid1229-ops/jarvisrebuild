@@ -3,7 +3,13 @@ import { ConversationRepo, type ConversationStore } from "../conversation/conver
 import { PendingActionsRepo, type PendingStore } from "../confirmations/pending-actions.js";
 import { ToolDispatcher } from "../confirmations/gate.js";
 import { actionTools } from "../confirmations/action-tools.js";
-import type { EmbeddingProvider, VectorIndex } from "../memory/embeddings.js";
+import { reindexUnindexed, type EmbeddingProvider, type VectorIndex } from "../memory/embeddings.js";
+import {
+  MEMORY_REVIEW_QUIET_MS,
+  MemoryReviewer,
+  MemoryRunsRepo,
+  type MemoryRunsStore,
+} from "../memory/memory-review.js";
 import { FactsRepo, type FactsStore } from "../memory/facts-repo.js";
 import { memoryTools } from "../memory/memory-tools.js";
 import { ReceiptsRepo, type ReceiptsStore } from "../receipts/receipts-repo.js";
@@ -47,8 +53,12 @@ export interface BuildInput {
   /** Owner PIN config for the five actions on a call. Missing => fail closed. */
   ownerPin?: string;
   pinPepper?: string;
-  /** Object store for backup/archive/vault. Defaults to an in-memory bucket. */
+  /** Object store for the conversation archive. Production: R2 (ARCHIVE). Defaults to in-memory. */
   bucket?: Bucket;
+  /** Object store for nightly backups. Production: R2 (BACKUP). Defaults to `bucket`. */
+  backupBucket?: Bucket;
+  /** MEMORY_EXTRACTION_MODEL: memory reviews run on this when set; otherwise on `model`. */
+  extractionModel?: Model;
   /** Points the single DO alarm at the earliest wake-up. Defaults to a no-op. */
   setAlarm?: SetAlarm;
   /** External watchdog ping URL (Healthchecks.io). Missing => not_connected. */
@@ -67,6 +77,7 @@ export interface BuildInput {
     guests?: GuestsStore;
     wakeupsRepo?: WakeupsStore;
     heartbeat?: HeartbeatStore;
+    memoryRuns?: MemoryRunsStore;
   };
   /**
    * D1 database. When present, the school surface (collector keys, evidence,
@@ -95,6 +106,11 @@ export interface BuiltJarvis {
   heartbeat: HeartbeatStore;
   watchdog: WatchdogPinger;
   bucket: Bucket;
+  backupBucket: Bucket;
+  memoryRuns: MemoryRunsStore;
+  reviewer: MemoryReviewer;
+  /** Hourly: put active facts that missed the meaning index into it. */
+  reindex: () => ReturnType<typeof reindexUnindexed>;
   school?: SchoolServices;
 }
 
@@ -145,15 +161,24 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
   const archive = new ArchiveService(bucket, input.clock);
   const heartbeat = input.stores?.heartbeat ?? new HeartbeatRepo(input.clock);
   const watchdog = new WatchdogPinger(input.watchdogUrl);
-  const backup = new BackupService(bucket, input.clock, {
-    facts: () => facts.all(),
-    pending_actions: async () => [], // exposed via repo internals in production; empty view here
-    wakeups: () => wakeupsRepo.list(),
-    guests: () => guests.list(),
-    connected_apps: () => appsRepo.list(),
-    receipts: () => receipts.all(),
-    settings: async () => Object.entries(await settings.all()).map(([key, value]) => ({ key, value })),
-  });
+  const memoryRuns = input.stores?.memoryRuns ?? new MemoryRunsRepo(input.clock);
+  const backupBucket = input.backupBucket ?? bucket;
+  // With D1 bound, the backup dumps EVERY table in the database (read from
+  // sqlite_master), so a table added later is never forgotten. Without D1 it
+  // falls back to the in-memory stores.
+  const backup = input.db
+    ? BackupService.fromD1(backupBucket, input.clock, input.db)
+    : new BackupService(backupBucket, input.clock, {
+        facts: () => facts.all(),
+        messages: () => conversation.all(),
+        pending_actions: () => pending.all(),
+        wakeups: () => wakeupsRepo.list(),
+        guests: () => guests.list(),
+        connected_apps: () => appsRepo.list(),
+        receipts: () => receipts.all(),
+        memory_runs: () => memoryRuns.all(),
+        settings: async () => Object.entries(await settings.all()).map(([key, value]) => ({ key, value })),
+      });
 
   const agent = new AgentCore({
     model: input.model,
@@ -176,7 +201,21 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     archive,
     ...(school ? { school } : {}),
     ...(input.pinPepper ? { pinPepper: input.pinPepper } : {}),
+    // Each live exchange pushes the quiet-conversation memory review later.
+    afterOwnerTurn: async () => {
+      const at = new Date(input.clock.nowMs() + MEMORY_REVIEW_QUIET_MS).toISOString();
+      await wakeups.setSystemTimer("memory_review", at, "memory review: the conversation went quiet");
+    },
   });
+
+  const reviewer = new MemoryReviewer({
+    conversation,
+    runs: memoryRuns,
+    agent,
+    modelName: (input.extractionModel ?? input.model).name ?? "unknown",
+    ...(input.extractionModel ? { extractionModel: input.extractionModel } : {}),
+  });
+  const reindex = () => reindexUnindexed(facts, input.embeddings, input.vectors);
 
   return {
     agent,
@@ -197,6 +236,10 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     heartbeat,
     watchdog,
     bucket,
+    backupBucket,
+    memoryRuns,
+    reviewer,
+    reindex,
     ...(school ? { school } : {}),
   };
 }

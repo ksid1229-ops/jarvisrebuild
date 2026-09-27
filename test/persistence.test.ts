@@ -8,6 +8,7 @@ import { describe, expect, it, beforeAll } from "vitest";
 import initSqlJs, { type Database, type SqlValue } from "sql.js";
 import migration0001 from "../migrations/0001_init.sql?raw";
 import migration0002 from "../migrations/0002_school_surface.sql?raw";
+import migration0003 from "../migrations/0003_memory_hardening.sql?raw";
 import { FixedClock } from "../src/clock.js";
 import type { D1Bound, D1Db, D1Prepared, D1Row, D1RunResult } from "../src/persistence/d1.js";
 import { D1FactsRepo } from "../src/memory/facts-repo.js";
@@ -72,6 +73,7 @@ function freshDb(): SqlJsDb {
   // THE migration files, not a copy. If they drift from the adapters, this fails.
   db.exec(migration0001);
   db.exec(migration0002);
+  db.exec(migration0003);
   return new SqlJsDb(db);
 }
 
@@ -84,7 +86,12 @@ describe("D1 persistence (real SQLite + real migrations)", () => {
       sourceType: "conversation", sourceRef: "x", expiresAt: null,
     });
     expect((await facts.get(f1.id))?.text).toContain("iPhone 15");
-    const f2 = await facts.correct(f1.id, "Sid has an iPhone 16", "confirmed", "durable", null);
+    const f2 = await facts.correct(f1.id, {
+      text: "Sid has an iPhone 16", confidence: "confirmed", kind: "durable", expiresAt: null,
+      reason: "he upgraded", sourceType: "conversation", sourceRef: "y", sourceMessageId: null,
+    });
+    expect(f2.correctionReason).toBe("he upgraded");
+    expect(f2.sourceRef).toBe("y");
     expect((await facts.get(f1.id))?.supersededBy).toBe(f2.id);
     expect((await facts.explain(f2.id)).map((f) => f.text)).toEqual([
       "Sid has an iPhone 15",
@@ -116,13 +123,16 @@ describe("D1 persistence (real SQLite + real migrations)", () => {
     await convo.append("user", "call me later", "voice");
     expect((await convo.all()).map((m) => m.content)).toEqual(["hello", "hi there", "call me later"]);
     expect((await convo.recent(2)).map((m) => m.content)).toEqual(["hi there", "call me later"]);
-    expect((await convo.literalSearch("CALL")).map((m) => m.content)).toEqual(["call me later"]);
+    expect((await convo.search({ query: "CALL", limit: 10 })).results.map((m) => m.content)).toEqual(["call me later"]);
     expect(await convo.needsSummary()).toBe(true); // 3 unsummarized > threshold 2
     const rolled = await convo.applySummary("old chat", 2);
     expect(rolled.map((m) => m.content)).toEqual(["hello", "hi there"]);
-    const after = await convo.all();
+    const after = await convo.context();
     expect(after.map((m) => m.content)).toEqual(["old chat", "call me later"]);
     expect(after[0]?.isSummary).toBe(true);
+    // The rolled-up messages are still in the record and still searchable.
+    expect((await convo.all()).filter((m) => !m.isSummary).map((m) => m.content)).toEqual(["hello", "hi there", "call me later"]);
+    expect((await convo.search({ query: "hello", limit: 10 })).results).toHaveLength(1);
     expect(await convo.needsSummary()).toBe(false);
   });
 

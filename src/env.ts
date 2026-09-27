@@ -48,6 +48,10 @@ export interface Env {
   /** Sid's IANA timezone. Ontario => America/Toronto (handles EST/EDT + DST). */
   OWNER_TIMEZONE?: string;
 
+  // --- Watchdog ---
+  /** Healthchecks.io ping URL. Missing => the watchdog reports not_connected. */
+  WATCHDOG_PING_URL?: string;
+
   // --- Vault sync ---
   VAULT_EXPORT_TOKEN?: string;
 }

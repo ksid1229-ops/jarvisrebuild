@@ -14,8 +14,10 @@ describe("Phase 6: daily rhythm", () => {
       { content: "Scheduled." },
     ]);
     await h.agent.handle(ownerEvent("remind me the night before my essay"));
-    expect(await h.wakeups.list()).toHaveLength(1);
-    expect((await h.wakeups.earliest())!.reason).toContain("essay");
+    const all = await h.wakeups.list();
+    expect(all.filter((w) => w.kind === "owner").map((w) => w.reason)).toEqual(["essay due tomorrow"]);
+    // The live exchange also armed the quiet-conversation memory review (a system timer).
+    expect(all.filter((w) => w.kind === "memory_review")).toHaveLength(1);
   });
 
   it("keeps the single alarm on the EARLIEST of several wake-ups", async () => {
@@ -38,11 +40,11 @@ describe("Phase 6: daily rhythm", () => {
     const fired: string[] = [];
     // At 10:00 nothing is due — must NOT fire an hour early.
     let n = await sched.fireDue(async (w) => void fired.push(w.reason));
-    expect(n).toBe(0);
+    expect(n.fired).toBe(0);
     // At 11:00 it is due.
     clock.set("2026-09-26T11:00:00.000Z");
     n = await sched.fireDue(async (w) => void fired.push(w.reason));
-    expect(n).toBe(1);
+    expect(n.fired).toBe(1);
     expect(fired).toEqual(["at 11"]);
   });
 

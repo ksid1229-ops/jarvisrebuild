@@ -5,13 +5,21 @@ import { buildJarvis } from "./jarvis/build.js";
 import { DeepSeekModel } from "./model/deepseek.js";
 import { MissingModelKeyError } from "./model/types.js";
 import { TelegramChannel } from "./channels/telegram-channel.js";
-import { FakeEmbeddingProvider, InMemoryVectorIndex, WorkersAiEmbeddingProvider } from "./memory/embeddings.js";
+import {
+  CloudflareVectorizeIndex,
+  InMemoryVectorIndex,
+  UnavailableEmbeddingProvider,
+  WorkersAiEmbeddingProvider,
+  type VectorizeLike,
+} from "./memory/embeddings.js";
+import { D1MemoryRunsRepo } from "./memory/memory-review.js";
+import { R2BucketAdapter, type R2Like } from "./plumbing/bucket.js";
 import { newId } from "./ids.js";
 import type { JarvisEvent } from "./jarvis/agent-core.js";
 import { AppEventsRepo, D1AppEventsRepo, wakeOnAppEvent } from "./apps/app-events.js";
 import { buildConnectTwiml } from "./voice/twiml.js";
 import { verifyTwilioSignature } from "./voice/twilio-signature.js";
-import { handleCron } from "./scheduler/cron.js";
+import { fireWakeup, handleCron } from "./scheduler/cron.js";
 import { buildVaultExport, authorizeVaultExport } from "./plumbing/vault.js";
 import type { D1Db } from "./persistence/d1.js";
 import { D1FactsRepo } from "./memory/facts-repo.js";
@@ -145,7 +153,11 @@ export default {
   /** Cron entry point. Cloudflare passes the matched cron string in event.cron. */
   async scheduled(event: { cron: string }, env: Env): Promise<void> {
     const ns = env.JARVIS as DurableObjectNamespace | undefined;
-    if (!ns || !env.OWNER_CHAT_ID) return;
+    if (!ns || !env.OWNER_CHAT_ID) {
+      // Loud, not silent: the external watchdog will also stop getting pings.
+      console.error("scheduled: JARVIS binding or OWNER_CHAT_ID missing; cron did nothing");
+      return;
+    }
     const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
     await stub.fetch(`https://do/cron?expr=${encodeURIComponent(event.cron)}`, { method: "POST" });
   },
@@ -180,9 +192,24 @@ export class JarvisDurableObject {
       throw e;
     }
 
+    // Memory reviews may run on a separate model (brief section 5). Unset => the main model.
+    const extractionModel =
+      this.env.MEMORY_EXTRACTION_MODEL && this.env.MEMORY_EXTRACTION_MODEL.trim() !== ""
+        ? new DeepSeekModel({ apiKey: this.env.DEEPSEEK_API_KEY ?? "", model: this.env.MEMORY_EXTRACTION_MODEL })
+        : undefined;
+
+    // Embeddings: Workers AI, or an honest failure. Never the bag-of-words test fake.
     const ai = this.env.AI as { run(model: string, input: unknown): Promise<any> } | undefined;
-    const embeddings = ai ? new WorkersAiEmbeddingProvider(ai) : new FakeEmbeddingProvider();
-    const vectors = new InMemoryVectorIndex(); // Vectorize adapter is the production swap-in.
+    const embeddings = ai ? new WorkersAiEmbeddingProvider(ai) : new UnavailableEmbeddingProvider();
+    // Vector index: Vectorize (persists across evictions). Without the binding the
+    // in-memory index is used and forgets on eviction — facts stay safe in D1 and
+    // memory_search reports how many are not indexed.
+    const vectors = this.env.MEMORY_VECTORS
+      ? new CloudflareVectorizeIndex(this.env.MEMORY_VECTORS as VectorizeLike)
+      : new InMemoryVectorIndex();
+    const archiveBucket = this.env.ARCHIVE ? new R2BucketAdapter(this.env.ARCHIVE as R2Like) : undefined;
+    const backupBucket = this.env.BACKUP ? new R2BucketAdapter(this.env.BACKUP as R2Like) : undefined;
+    const storage = this.state.storage as DurableObjectStorageLike;
 
     const ownerChannel = new TelegramChannel(this.env.TELEGRAM_BOT_TOKEN ?? "", chatId);
 
@@ -199,6 +226,7 @@ export class JarvisDurableObject {
           guests: new D1GuestsRepo(db, clock),
           wakeupsRepo: new D1WakeupsRepo(db, clock),
           heartbeat: new D1HeartbeatRepo(db, clock),
+          memoryRuns: new D1MemoryRunsRepo(db, clock),
         }
       : undefined;
 
@@ -212,6 +240,15 @@ export class JarvisDurableObject {
       timezone: this.env.OWNER_TIMEZONE ?? "America/Toronto",
       ...(stores ? { stores } : {}),
       ...(db ? { db } : {}),
+      ...(extractionModel ? { extractionModel } : {}),
+      ...(archiveBucket ? { bucket: archiveBucket } : {}),
+      ...(backupBucket ? { backupBucket } : {}),
+      ...(this.env.WATCHDOG_PING_URL ? { watchdogUrl: this.env.WATCHDOG_PING_URL } : {}),
+      // The ONE Durable Object alarm, always pointed at the earliest wake-up.
+      setAlarm: async (fireAtIso) => {
+        if (fireAtIso === null) await storage.deleteAlarm();
+        else await storage.setAlarm(Date.parse(fireAtIso));
+      },
       ...(this.env.OWNER_ACTION_PIN ? { ownerPin: this.env.OWNER_ACTION_PIN } : {}),
       ...(this.env.OWNER_PIN_PEPPER ? { pinPepper: this.env.OWNER_PIN_PEPPER } : {}),
     });
@@ -317,8 +354,37 @@ export class JarvisDurableObject {
       heartbeat: built.heartbeat,
       watchdog: built.watchdog,
       backup: built.backup,
+      reviewer: built.reviewer,
+      reindex: built.reindex,
     });
+    if (result.wakeupsFailed.length > 0 || result.memoryReview?.status === "error" || result.hourlyCheck?.ok === false) {
+      console.error("cron: failures", JSON.stringify(result));
+    }
     return json({ ok: true, result });
+  }
+
+  /**
+   * Durable Object alarm: fires every due wake-up (Sid's reminders and the
+   * quiet-conversation memory review) at its time, not up to an hour late on
+   * the next cron. A failed wake-up stays queued and the scheduler re-arms the
+   * alarm with a retry floor; failures are logged, never dropped.
+   */
+  async alarm(): Promise<void> {
+    const ownerId = this.env.OWNER_CHAT_ID;
+    if (!ownerId) {
+      console.error("alarm: OWNER_CHAT_ID not configured; wake-ups cannot run");
+      return;
+    }
+    let built;
+    try {
+      built = this.ensureBuilt(ownerId);
+    } catch (e) {
+      console.error("alarm: cannot build Jarvis:", (e as Error).message);
+      throw e; // Cloudflare retries a throwing alarm with backoff.
+    }
+    await built.heartbeat.record("alarm");
+    const res = await built.wakeups.fireDue((w) => fireWakeup(w, { agent: built.agent, reviewer: built.reviewer }));
+    if (res.failed.length > 0) console.error("alarm: wake-ups failed and stay queued", JSON.stringify(res.failed));
   }
 
   private async handleVaultExport(request: Request): Promise<Response> {
@@ -385,4 +451,10 @@ export class JarvisDurableObject {
     }
     return json(result.body, result.status);
   }
+}
+
+/** The slice of DurableObjectStorage used for the single alarm. */
+interface DurableObjectStorageLike {
+  setAlarm(scheduledTimeMs: number): Promise<void>;
+  deleteAlarm(): Promise<void>;
 }

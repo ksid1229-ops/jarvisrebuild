@@ -34,12 +34,14 @@ export const scheduleWakeup: Tool = {
 
 export const listWakeups: Tool = {
   name: "list_wakeups",
-  description: "List your pending wake-ups with their times and reasons.",
+  description:
+    "List your pending wake-ups with their times and reasons. kind 'owner' = reminders you set; " +
+    "kind 'memory_review' = the system timer that runs a memory review once the conversation goes quiet.",
   parameters: { type: "object", properties: {} },
   async run(_args, ctx): Promise<ToolResult> {
     if (!ctx.wakeups) return { ok: false, status: "not_connected", message: "Scheduler not wired." };
     const list = await ctx.wakeups.list();
-    return { ok: true, status: "ok", data: list.map((w) => ({ id: w.id, fireAt: w.fireAt, reason: w.reason })) };
+    return { ok: true, status: "ok", data: list.map((w) => ({ id: w.id, fireAt: w.fireAt, reason: w.reason, kind: w.kind })) };
   },
 };
 

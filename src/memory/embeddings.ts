@@ -1,11 +1,14 @@
 /**
  * Embeddings + a vector index for meaning search.
  *
- * Production uses Workers AI for embeddings and Vectorize for the index. In the
- * sandbox neither runs, so a deterministic fake stands in (see PROGRESS.md:
- * "faked"). The fake is honest about being a bag-of-words cosine, not a real
- * semantic model — but it is enough to prove the recall PATH: index a fact,
- * search a related query, get it back, and never get hidden/expired facts.
+ * Production: WorkersAiEmbeddingProvider (env.AI) + CloudflareVectorizeIndex
+ * (env.MEMORY_VECTORS). Both are adapters over Cloudflare bindings; the sandbox
+ * cannot reach Cloudflare, so tests drive them through fakes shaped like the
+ * real bindings. The Worker NEVER falls back to the bag-of-words fake: without
+ * the AI binding it uses UnavailableEmbeddingProvider, which fails loudly.
+ *
+ * Tests use FakeEmbeddingProvider (a deterministic bag-of-words cosine, not a
+ * semantic model) + InMemoryVectorIndex, which prove the recall PATH only.
  */
 
 export interface EmbeddingProvider {
@@ -39,6 +42,17 @@ export class WorkersAiEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+/**
+ * Used when the Workers AI binding is missing. Meaning search and indexing then
+ * fail with this message instead of silently using a keyword fake.
+ */
+export class UnavailableEmbeddingProvider implements EmbeddingProvider {
+  constructor(private readonly why = "not connected: the Workers AI binding (AI) is missing") {}
+  async embed(): Promise<number[]> {
+    throw new Error(this.why);
+  }
+}
+
 export interface VectorHit {
   id: string;
   score: number;
@@ -67,6 +81,65 @@ export class InMemoryVectorIndex implements VectorIndex {
     hits.sort((a, b) => b.score - a.score);
     return hits.slice(0, topK);
   }
+}
+
+/** The slice of the Vectorize binding this adapter uses (Vectorize V2 API). */
+export interface VectorizeLike {
+  upsert(vectors: { id: string; values: number[] }[]): Promise<unknown>;
+  deleteByIds(ids: string[]): Promise<unknown>;
+  query(vector: number[], opts: { topK: number; returnValues?: boolean; returnMetadata?: string | boolean }): Promise<{
+    matches: { id: string; score: number }[];
+  }>;
+}
+
+/**
+ * Real Vectorize index. Vectors persist outside the Durable Object, so meaning
+ * search survives evictions and redeploys (the in-memory index did not).
+ * Vectorize applies mutations asynchronously: a just-saved fact can take a few
+ * seconds to become searchable. The ledger (D1) is always the source of truth;
+ * every hit is re-checked against it before it reaches the model.
+ */
+export class CloudflareVectorizeIndex implements VectorIndex {
+  /** Vectorize's own topK ceiling when values/metadata are not returned. */
+  static readonly MAX_TOP_K = 100;
+  constructor(private readonly index: VectorizeLike) {}
+  async upsert(id: string, vector: number[]): Promise<void> {
+    await this.index.upsert([{ id, values: vector }]);
+  }
+  async remove(id: string): Promise<void> {
+    await this.index.deleteByIds([id]);
+  }
+  async query(vector: number[], topK: number): Promise<VectorHit[]> {
+    const k = Math.max(1, Math.min(topK, CloudflareVectorizeIndex.MAX_TOP_K));
+    const res = await this.index.query(vector, { topK: k, returnValues: false, returnMetadata: "none" });
+    return (res.matches ?? []).map((m) => ({ id: m.id, score: m.score }));
+  }
+}
+
+/**
+ * Re-index active facts that are not in the meaning index yet (the index was
+ * down when they were saved, or they predate Vectorize). Runs hourly. Every
+ * failure is counted and returned; nothing is dropped quietly.
+ */
+export async function reindexUnindexed(
+  facts: import("./facts-repo.js").FactsStore,
+  embeddings: EmbeddingProvider,
+  vectors: VectorIndex,
+  cap = 100,
+): Promise<{ indexed: number; failed: { id: string; error: string }[]; remaining: number }> {
+  const { facts: batch, total } = await facts.unindexedActive(cap);
+  let indexed = 0;
+  const failed: { id: string; error: string }[] = [];
+  for (const f of batch) {
+    try {
+      await vectors.upsert(f.id, await embeddings.embed(f.text));
+      await facts.markIndexed(f.id, true);
+      indexed += 1;
+    } catch (e) {
+      failed.push({ id: f.id, error: (e as Error).message });
+    }
+  }
+  return { indexed, failed, remaining: total - indexed };
 }
 
 function tokenize(text: string): string[] {

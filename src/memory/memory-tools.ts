@@ -1,23 +1,98 @@
 import type { Tool, ToolContext, ToolResult } from "../jarvis/tool-types.js";
-import { verifyQuote } from "./provenance.js";
-import type { FactConfidence, FactKind } from "../types.js";
+import { ProvenanceError, resolveStatedSource } from "./provenance.js";
+import { SupersededFactError } from "./facts-repo.js";
+import type { Channel, Fact, FactConfidence, FactKind } from "../types.js";
 
 const KINDS: FactKind[] = ["durable", "temporary"];
 const CONFIDENCES: FactConfidence[] = ["stated", "inferred", "confirmed"];
+const CHANNELS: Channel[] = ["text", "voice"];
+
+function refused(message: string): ToolResult {
+  return { ok: false, status: "refused", message };
+}
 
 function badEnum(field: string, value: unknown, allowed: string[]): ToolResult {
+  return refused(`${field} must be one of ${allowed.join(", ")}; got ${JSON.stringify(value)}. Not defaulted.`);
+}
+
+/** Validation only: a positive whole number the MODEL chose. Returns null if invalid. */
+function modelLimit(v: unknown): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 1) return null;
+  return Math.floor(v);
+}
+
+/** Validation only: an RFC3339-parsable instant, normalized to UTC ms. */
+function realInstant(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+/**
+ * Index a fact for meaning search. The fact is already safely in the ledger; if
+ * the index is down, say so (the hourly re-index retries) rather than failing
+ * the save or pretending it is searchable.
+ */
+async function indexFact(ctx: ToolContext, fact: Fact): Promise<string | null> {
+  try {
+    const vector = await ctx.embeddings.embed(fact.text);
+    await ctx.vectors.upsert(fact.id, vector);
+    await ctx.facts.markIndexed(fact.id, true);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+/** Remove a fact from the meaning index; an error is reported, never swallowed. */
+async function unindexFact(ctx: ToolContext, id: string): Promise<string | null> {
+  try {
+    await ctx.vectors.remove(id);
+    await ctx.facts.markIndexed(id, false);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+function withIndexNote(base: ToolResult, indexError: string | null): ToolResult {
+  if (!indexError) return base;
   return {
-    ok: false,
-    status: "refused",
-    message: `${field} must be one of ${allowed.join(", ")}; got ${JSON.stringify(value)}. Not defaulted.`,
+    ...base,
+    message: `${base.message ?? ""} Saved in the ledger but NOT yet in meaning search (${indexError}); the hourly re-index will retry. history and memory_explain still see it.`.trim(),
+    data: { ...(base.data as object), indexed: false, indexError },
   };
 }
 
-/** Index a fact for meaning search. */
-async function indexFact(ctx: ToolContext, id: string, text: string): Promise<void> {
-  const vector = await ctx.embeddings.embed(text);
-  await ctx.vectors.upsert(id, vector);
+type Source = { sourceMessageId: string | null } | { error: ToolResult };
+
+/**
+ * Where a fact comes from. Provenance is code's job (a fact the model cannot
+ * see for itself); whether the fact is worth saving is the model's.
+ */
+async function resolveSource(args: Record<string, unknown>, confidence: FactConfidence, ctx: ToolContext): Promise<Source> {
+  const cited = typeof args.source_message_id === "string" && args.source_message_id !== "" ? args.source_message_id : undefined;
+  if (confidence === "stated") {
+    if (typeof args.quote !== "string") return { error: refused("A stated fact requires quote (Sid's exact words).") };
+    try {
+      const src = await resolveStatedSource(args.quote, cited, ctx);
+      return { sourceMessageId: src.messageId };
+    } catch (e) {
+      if (e instanceof ProvenanceError) return { error: refused(e.message) };
+      throw e;
+    }
+  }
+  if (cited !== undefined) {
+    if (!(await ctx.conversation.get(cited))) return { error: refused(`source_message_id ${cited} does not exist.`) };
+    return { sourceMessageId: cited };
+  }
+  return { sourceMessageId: ctx.currentMessageId ?? null };
 }
+
+const SOURCE_DOC =
+  "source_message_id: optional — the id of the message this rests on (history_search results and " +
+  "memory-review transcripts show ids like msg_...). Needed for a stated fact when you are not " +
+  "replying to that message right now, e.g. during a review. ";
 
 export const memorySave: Tool = {
   name: "memory_save",
@@ -28,9 +103,10 @@ export const memorySave: Tool = {
     "kind: 'durable' for things that stay true (he has an iPhone 16), 'temporary' for things " +
     "that expire (he's away this weekend) — a temporary fact REQUIRES expires_at as an RFC3339 " +
     "UTC instant. " +
-    "confidence: 'stated' if Sid said it (you MUST also pass quote: the exact words from his " +
-    "message), 'inferred' if you concluded it, 'confirmed' only once Sid confirms an inference. " +
-    "confidence is required and never defaulted. " +
+    "confidence: 'stated' if Sid said it (you MUST also pass quote: his exact words, which must " +
+    "appear in his message — forwarded texts are not his words), 'inferred' if you concluded it, " +
+    "'confirmed' only once Sid confirms an inference. confidence is required and never defaulted. " +
+    SOURCE_DOC +
     "Example: memory_save(text='Sid hates mornings', kind='durable', confidence='stated', " +
     "quote='i hate mornings').",
   parameters: {
@@ -40,6 +116,7 @@ export const memorySave: Tool = {
       kind: { type: "string", enum: KINDS, description: "durable or temporary" },
       confidence: { type: "string", enum: CONFIDENCES, description: "stated | inferred | confirmed" },
       quote: { type: "string", description: "Required when confidence='stated': Sid's exact words." },
+      source_message_id: { type: "string", description: "Optional: the msg_... id this fact rests on." },
       expires_at: { type: "string", description: "Required when kind='temporary': RFC3339 UTC instant." },
       pinned: { type: "boolean", description: "Set true only for core-profile facts." },
     },
@@ -47,9 +124,7 @@ export const memorySave: Tool = {
   },
   async run(args, ctx): Promise<ToolResult> {
     const text = args.text;
-    if (typeof text !== "string" || text.trim() === "") {
-      return { ok: false, status: "refused", message: "text is required." };
-    }
+    if (typeof text !== "string" || text.trim() === "") return refused("text is required.");
     const kind = args.kind as FactKind;
     if (!KINDS.includes(kind)) return badEnum("kind", args.kind, KINDS);
     const confidence = args.confidence as FactConfidence;
@@ -58,30 +133,14 @@ export const memorySave: Tool = {
     let expiresAt: string | null = null;
     if (kind === "temporary") {
       if (typeof args.expires_at !== "string") {
-        return {
-          ok: false,
-          status: "refused",
-          message: "A temporary fact requires expires_at (RFC3339 UTC). Refused rather than defaulted.",
-        };
+        return refused("A temporary fact requires expires_at (RFC3339 UTC). Refused rather than defaulted.");
       }
-      const t = Date.parse(args.expires_at);
-      if (Number.isNaN(t)) {
-        return { ok: false, status: "refused", message: `expires_at is not a real date: ${args.expires_at}` };
-      }
-      expiresAt = new Date(t).toISOString();
+      expiresAt = realInstant(args.expires_at);
+      if (!expiresAt) return refused(`expires_at is not a real date: ${args.expires_at}`);
     }
 
-    // Provenance: a 'stated' fact must quote Sid's words, verified against his message.
-    if (confidence === "stated") {
-      if (typeof args.quote !== "string") {
-        return { ok: false, status: "refused", message: "A stated fact requires quote (Sid's exact words)." };
-      }
-      try {
-        verifyQuote(args.quote, ctx.ownerMessageText);
-      } catch (e) {
-        return { ok: false, status: "refused", message: (e as Error).message };
-      }
-    }
+    const source = await resolveSource(args, confidence, ctx);
+    if ("error" in source) return source.error;
 
     const fact = await ctx.facts.save({
       text,
@@ -89,11 +148,12 @@ export const memorySave: Tool = {
       confidence,
       sourceType: ctx.provenance.sourceType,
       sourceRef: ctx.provenance.sourceRef,
+      sourceMessageId: source.sourceMessageId,
       expiresAt,
       pinned: args.pinned === true,
     });
-    await indexFact(ctx, fact.id, fact.text);
-    return { ok: true, status: "ok", message: `Saved fact ${fact.id}`, data: { id: fact.id } };
+    const indexError = await indexFact(ctx, fact);
+    return withIndexNote({ ok: true, status: "ok", message: `Saved fact ${fact.id}`, data: { id: fact.id } }, indexError);
   },
 };
 
@@ -103,7 +163,11 @@ export const memoryCorrect: Tool = {
     "Replace an existing fact with a corrected version, linking the new to the old (nothing is " +
     "overwritten; the history stays). Use when a new statement supersedes an old one. You state " +
     "the replacement's kind, confidence and (if temporary) expires_at — pass the same values if " +
-    "only the wording changed. reason: why it changed.",
+    "only the wording changed. reason: why it changed (kept on the new version and shown by " +
+    "memory_explain). The new version's source is THIS turn (or source_message_id), not the old " +
+    "fact's; a 'stated' correction needs quote exactly like memory_save. Only the current version " +
+    "can be corrected — if you pass an outdated one you will be told the current id. " +
+    SOURCE_DOC,
   parameters: {
     type: "object",
     properties: {
@@ -112,28 +176,56 @@ export const memoryCorrect: Tool = {
       confidence: { type: "string", enum: CONFIDENCES },
       kind: { type: "string", enum: KINDS },
       expires_at: { type: "string", description: "Required when kind='temporary'." },
+      quote: { type: "string", description: "Required when confidence='stated': Sid's exact words." },
+      source_message_id: { type: "string", description: "Optional: the msg_... id this correction rests on." },
       reason: { type: "string" },
     },
     required: ["fact_id", "new_text", "confidence", "kind", "reason"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const fact = await ctx.facts.get(String(args.fact_id));
-    if (!fact) return { ok: false, status: "refused", message: `fact ${args.fact_id} does not exist.` };
+    if (!fact) return refused(`fact ${args.fact_id} does not exist.`);
+    const newText = args.new_text;
+    if (typeof newText !== "string" || newText.trim() === "") return refused("new_text is required.");
+    const reason = args.reason;
+    if (typeof reason !== "string" || reason.trim() === "") return refused("reason is required. Not defaulted.");
     const kind = args.kind as FactKind;
     if (!KINDS.includes(kind)) return badEnum("kind", args.kind, KINDS);
     const confidence = args.confidence as FactConfidence;
     if (!CONFIDENCES.includes(confidence)) return badEnum("confidence", args.confidence, CONFIDENCES);
     let expiresAt: string | null = null;
     if (kind === "temporary") {
-      if (typeof args.expires_at !== "string" || Number.isNaN(Date.parse(args.expires_at))) {
-        return { ok: false, status: "refused", message: "A temporary correction requires a real expires_at." };
-      }
-      expiresAt = new Date(args.expires_at).toISOString();
+      expiresAt = realInstant(args.expires_at);
+      if (!expiresAt) return refused("A temporary correction requires a real expires_at.");
     }
-    const next = await ctx.facts.correct(fact.id, String(args.new_text), confidence, kind, expiresAt);
-    await ctx.vectors.remove(fact.id);
-    await indexFact(ctx, next.id, next.text);
-    return { ok: true, status: "ok", message: `Corrected into ${next.id}`, data: { id: next.id } };
+    const source = await resolveSource(args, confidence, ctx);
+    if ("error" in source) return source.error;
+
+    let next: Fact;
+    try {
+      next = await ctx.facts.correct(fact.id, {
+        text: newText,
+        kind,
+        confidence,
+        expiresAt,
+        reason,
+        sourceType: ctx.provenance.sourceType,
+        sourceRef: ctx.provenance.sourceRef,
+        sourceMessageId: source.sourceMessageId,
+      });
+    } catch (e) {
+      if (e instanceof SupersededFactError) {
+        return { ok: false, status: "refused", message: e.message, data: { currentId: e.currentId } };
+      }
+      throw e;
+    }
+    const removeError = await unindexFact(ctx, fact.id);
+    const indexError = await indexFact(ctx, next);
+    const base: ToolResult = { ok: true, status: "ok", message: `Corrected into ${next.id}`, data: { id: next.id } };
+    if (removeError) {
+      base.message += ` (the old version could not be removed from the meaning index: ${removeError}; search still hides it because it is superseded)`;
+    }
+    return withIndexNote(base, indexError);
   },
 };
 
@@ -156,11 +248,20 @@ function simpleFactTool(
 
 export const memoryForget = simpleFactTool(
   "memory_forget",
-  "Hide a fact from recall (reversible with memory_restore). Use when Sid asks to forget something.",
+  "Hide a fact from recall (reversible with memory_restore). Use when Sid asks to forget something. " +
+    "It hides the FACT: it stops appearing in your core profile and memory_search. The original " +
+    "messages it came from stay in the conversation record (history_search) — tell Sid that if he " +
+    "may expect the conversation itself to be gone.",
   async (ctx, id) => {
     await ctx.facts.forget(id);
-    await ctx.vectors.remove(id);
-    return { ok: true, status: "ok", message: `Hid fact ${id}` };
+    const err = await unindexFact(ctx, id);
+    return {
+      ok: true,
+      status: "ok",
+      message: err
+        ? `Hid fact ${id}. (Removing it from the meaning index failed: ${err}; search still hides it because it is hidden.)`
+        : `Hid fact ${id}`,
+    };
   },
 );
 
@@ -169,9 +270,8 @@ export const memoryRestore = simpleFactTool(
   "Un-hide a previously forgotten fact.",
   async (ctx, id) => {
     const f = await ctx.facts.restore(id);
-    const vec = await ctx.embeddings.embed(f.text);
-    await ctx.vectors.upsert(id, vec);
-    return { ok: true, status: "ok", message: `Restored fact ${id}` };
+    const indexError = await indexFact(ctx, f);
+    return withIndexNote({ ok: true, status: "ok", message: `Restored fact ${id}` }, indexError);
   },
 );
 
@@ -203,27 +303,48 @@ export const memoryUnpin = simpleFactTool(
   },
 );
 
+function factStatus(f: Fact, ctx: ToolContext): string {
+  if (f.supersededBy) return `superseded by ${f.supersededBy}`;
+  if (f.hidden) return "hidden (forgotten)";
+  if (!ctx.facts.isActive(f)) return "expired";
+  return "active";
+}
+
 export const memoryExplain: Tool = {
   name: "memory_explain",
-  description: "Show every version of a fact with its dated source, so you can see how it changed.",
+  description:
+    "Show every version of a fact, oldest first: its text, confidence, when and why it changed, " +
+    "its status (active, hidden, expired, superseded) and the exact message each version rests on " +
+    "(quoted from the record, with date and channel). Use it when Sid asks 'why do you think that?' " +
+    "or 'what did it say before?'.",
   parameters: { type: "object", properties: { fact_id: { type: "string" } }, required: ["fact_id"] },
   async run(args, ctx): Promise<ToolResult> {
     const id = String(args.fact_id);
-    if (!(await ctx.facts.get(id))) return { ok: false, status: "refused", message: `fact ${id} does not exist.` };
+    if (!(await ctx.facts.get(id))) return refused(`fact ${id} does not exist.`);
     const chain = await ctx.facts.explain(id);
-    return {
-      ok: true,
-      status: "ok",
-      data: chain.map((f) => ({
+    const versions = [];
+    for (const f of chain) {
+      const msg = f.sourceMessageId ? await ctx.conversation.get(f.sourceMessageId) : undefined;
+      versions.push({
         id: f.id,
         text: f.text,
+        kind: f.kind,
         confidence: f.confidence,
         createdAt: f.createdAt,
+        expiresAt: f.expiresAt,
+        status: factStatus(f, ctx),
+        pinned: f.pinned,
+        correctionReason: f.correctionReason,
         sourceType: f.sourceType,
         sourceRef: f.sourceRef,
-        supersededBy: f.supersededBy,
-      })),
-    };
+        sourceMessage: f.sourceMessageId
+          ? msg
+            ? { id: msg.id, role: msg.role, channel: msg.channel, at: msg.createdAt, content: msg.content, forwarded: msg.forwarded === true }
+            : { id: f.sourceMessageId, missing: true }
+          : null,
+      });
+    }
+    return { ok: true, status: "ok", data: { versions } };
   },
 };
 
@@ -231,64 +352,122 @@ export const memorySearch: Tool = {
   name: "memory_search",
   description:
     "Meaning search over everything you remember about Sid. Returns facts related to your query, " +
-    "even when the words differ. Hidden and expired facts are never returned. Use it whenever a " +
-    "reply would be better with what you know — you decide when and how many you need (pass limit).",
+    "even when the words differ. Hidden, expired and outdated facts are never returned. Use it " +
+    "whenever a reply would be better with what you know. limit: how many results you want — " +
+    "required, you choose (a few for a quick check, more when building a digest). The result also " +
+    "reports how many active facts are not yet in the meaning index, so an empty answer is never " +
+    "mistaken for 'nothing remembered' — use history_search as a fallback then.",
   parameters: {
     type: "object",
     properties: {
       query: { type: "string" },
-      limit: { type: "number", description: "How many results you want. You choose." },
+      limit: { type: "number", description: "How many results you want. Required; you choose." },
     },
-    required: ["query"],
+    required: ["query", "limit"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const query = String(args.query ?? "");
-    if (query.trim() === "") return { ok: false, status: "refused", message: "query is required." };
-    // System-protection cap only; the model picks the real number via limit.
-    const requested = typeof args.limit === "number" && args.limit > 0 ? Math.floor(args.limit) : 10;
+    if (query.trim() === "") return refused("query is required.");
+    const requested = modelLimit(args.limit);
+    if (requested === null) return refused("limit is required: a whole number of results you want. Not defaulted.");
+    // System-protection cap only (Vectorize's own topK ceiling); REPORTED when it bites.
     const HARD_CAP = 50;
     const topK = Math.min(requested, HARD_CAP);
-    const vec = await ctx.embeddings.embed(query);
-    // Over-fetch, then drop hidden/expired, so filtering doesn't shrink below what the model asked.
-    const hits = await ctx.vectors.query(vec, HARD_CAP);
+    let hits;
+    try {
+      const vec = await ctx.embeddings.embed(query);
+      // Over-fetch, then drop inactive, so filtering doesn't shrink below what the model asked.
+      hits = await ctx.vectors.query(vec, HARD_CAP);
+    } catch (e) {
+      return { ok: false, status: "error", message: `Meaning search is unavailable: ${(e as Error).message}. Try history_search.` };
+    }
     const results: unknown[] = [];
-    let dropped = 0;
+    let droppedInactive = 0;
     for (const h of hits) {
       const f = await ctx.facts.get(h.id);
       if (!f || !ctx.facts.isActive(f)) {
-        dropped += 1;
+        droppedInactive += 1;
         continue;
       }
       if (results.length < topK) {
-        results.push({ id: f.id, text: f.text, confidence: f.confidence, score: h.score });
+        results.push({ id: f.id, text: f.text, kind: f.kind, confidence: f.confidence, createdAt: f.createdAt, score: h.score });
       }
     }
-    return { ok: true, status: "ok", data: { results, droppedInactive: dropped } };
+    const { total: notYetIndexed } = await ctx.facts.unindexedActive(0);
+    return {
+      ok: true,
+      status: "ok",
+      data: {
+        results,
+        droppedInactive,
+        notYetIndexed,
+        ...(requested > HARD_CAP ? { cappedAt: HARD_CAP, requested } : {}),
+      },
+    };
   },
 };
 
 export const historySearch: Tool = {
   name: "history_search",
   description:
-    "Literal search of past conversations, including what YOU said on calls. Use it to find the " +
-    "exact wording of something that was said. Returns matching messages with their dates.",
+    "Literal search of the full conversation record — every text and every call transcript, " +
+    "Sid's words and yours — including messages older summaries replaced in your context. Use it " +
+    "for exact wording ('what did I say about the dentist?') or to find a message id to cite. " +
+    "query: text to find (case-insensitive). since/until: optional RFC3339 bounds. channel: " +
+    "optional 'text' or 'voice' (voice = phone calls). limit: how many matches you want, newest " +
+    "first — required, you choose. Results carry ids (msg_...) usable as source_message_id. The " +
+    "result reports totalMatches and coverage (how many messages are stored and since when), so " +
+    "'no match' can be told apart from 'not stored'.",
   parameters: {
     type: "object",
-    properties: { query: { type: "string" } },
-    required: ["query"],
+    properties: {
+      query: { type: "string" },
+      since: { type: "string", description: "Optional RFC3339 lower bound (inclusive)." },
+      until: { type: "string", description: "Optional RFC3339 upper bound (inclusive)." },
+      channel: { type: "string", enum: CHANNELS, description: "Optional: text or voice." },
+      limit: { type: "number", description: "How many matches you want. Required; you choose." },
+    },
+    required: ["query", "limit"],
   },
   async run(args, ctx): Promise<ToolResult> {
     const query = String(args.query ?? "");
-    if (query.trim() === "") return { ok: false, status: "refused", message: "query is required." };
-    const HARD_CAP = 50;
-    const all = await ctx.conversation.literalSearch(query);
-    const results = all.slice(0, HARD_CAP);
+    if (query.trim() === "") return refused("query is required.");
+    const requested = modelLimit(args.limit);
+    if (requested === null) return refused("limit is required: a whole number of matches you want. Not defaulted.");
+    const q: import("../conversation/conversation-repo.js").HistoryQuery = { query, limit: 0 };
+    if (args.since !== undefined) {
+      const since = realInstant(args.since);
+      if (!since) return refused(`since is not a real date: ${JSON.stringify(args.since)}`);
+      q.since = since;
+    }
+    if (args.until !== undefined) {
+      const until = realInstant(args.until);
+      if (!until) return refused(`until is not a real date: ${JSON.stringify(args.until)}`);
+      q.until = until;
+    }
+    if (q.since && q.until && q.since > q.until) return refused("since is after until.");
+    if (args.channel !== undefined) {
+      if (!CHANNELS.includes(args.channel as Channel)) return badEnum("channel", args.channel, CHANNELS);
+      q.channel = args.channel as Channel;
+    }
+    const HARD_CAP = 200; // system protection; reported when it bites
+    q.limit = Math.min(requested, HARD_CAP);
+    const r = await ctx.conversation.search(q);
     return {
       ok: true,
       status: "ok",
       data: {
-        results: results.map((m) => ({ role: m.role, content: m.content, at: m.createdAt, channel: m.channel })),
-        dropped: Math.max(0, all.length - results.length),
+        results: r.results.map((m) => ({
+          id: m.id,
+          role: m.role === "user" ? "sid" : "jarvis",
+          content: m.content,
+          at: m.createdAt,
+          channel: m.channel,
+          ...(m.forwarded ? { forwarded: true } : {}),
+        })),
+        totalMatches: r.totalMatches,
+        coverage: { storedMessages: r.storedMessages, earliestStored: r.earliestStored },
+        ...(requested > HARD_CAP ? { cappedAt: HARD_CAP, requested } : {}),
       },
     };
   },

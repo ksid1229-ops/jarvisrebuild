@@ -41,6 +41,12 @@ export interface Fact {
   supersededBy: string | null;
   hidden: boolean;
   pinned: boolean;
+  /** The stored message (messages.id) this version rests on, when there is one. */
+  sourceMessageId: string | null;
+  /** Why this version replaced the previous one (memory_correct). Null on a first version. */
+  correctionReason: string | null;
+  /** True once the fact's embedding is in the meaning-search index. */
+  indexed: boolean;
 }
 
 // ---- Conversation ----
@@ -53,6 +59,12 @@ export interface StoredMessage {
   createdAt: string;
   /** True when this message is a rollup summary of older messages. */
   isSummary?: boolean;
+  /** True when a summary has replaced this message in the model's context. The row is kept. */
+  rolledUp?: boolean;
+  /** True when Sid forwarded this text from elsewhere (not his own words). */
+  forwarded?: boolean;
+  /** The channel-level id (e.g. telegram:chat:msg) this message arrived as. */
+  sourceRef?: string;
 }
 
 // ---- Receipts (Proof) ----
@@ -103,9 +115,13 @@ export interface ConnectedApp {
 }
 
 // ---- Wake-ups (Phase 6) ----
+/** owner = a reminder the model set; memory_review = the conversation-went-quiet timer. */
+export type WakeupKind = "owner" | "memory_review";
+
 export interface Wakeup {
   id: string;
   fireAt: string;
   reason: string;
   createdAt: string;
+  kind: WakeupKind;
 }

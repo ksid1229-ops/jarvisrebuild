@@ -33,6 +33,15 @@ export interface AgentResult {
   reply: string;
   iterations: number;
   error?: string;
+  /** Every tool call this turn with its outcome (proof for callers such as memory reviews). */
+  toolCalls: { name: string; ok: boolean; status: string }[];
+  /** True when the turn hit MAX_TOOL_ROUNDS without a final reply. */
+  capped?: boolean;
+}
+
+export interface HandleOptions {
+  /** Run this turn on a different model (MEMORY_EXTRACTION_MODEL for reviews). Same tools, same memory. */
+  model?: Model;
 }
 
 export interface AgentDeps {
@@ -56,6 +65,8 @@ export interface AgentDeps {
   wakeups?: import("../scheduler/wakeup-scheduler.js").WakeupScheduler;
   archive?: import("../plumbing/archive.js").ArchiveService;
   school?: import("../school/school-tools.js").SchoolServices;
+  /** Called after each live owner exchange (text or call) — arms the quiet-conversation review. */
+  afterOwnerTurn?: () => Promise<void>;
 }
 
 /**
@@ -66,8 +77,9 @@ export interface AgentDeps {
 export class AgentCore {
   constructor(private readonly d: AgentDeps) {}
 
-  private makeContext(event: JarvisEvent): ToolContext {
+  private makeContext(event: JarvisEvent, currentMessageId?: string): ToolContext {
     return {
+      ...(currentMessageId ? { currentMessageId } : {}),
       clock: this.d.clock,
       ownerId: this.d.ownerId,
       provenance: event.provenance,
@@ -93,19 +105,29 @@ export class AgentCore {
     };
   }
 
-  async handle(event: JarvisEvent): Promise<AgentResult> {
+  async handle(event: JarvisEvent, opts: HandleOptions = {}): Promise<AgentResult> {
     // A guest (or unknown) caller gets a completely separate, minimal brain:
     // no owner profile, no owner memory, no tools. See handleGuest.
     if (event.call && event.call.role !== "owner") {
       return this.handleGuest(event, event.call);
     }
-    const ctx = this.makeContext(event);
+    const model = opts.model ?? this.d.model;
 
-    // Persist Sid's own words (text/call). Wake-ups are not Sid's words.
+    // Persist Sid's own words (text/call). Wake-ups are not Sid's words. The
+    // stored message keeps its provenance (forwarded, channel ref) so a stated
+    // fact can later be tied to exactly this message.
     const interactive = event.trigger === "text" || event.trigger === "call";
+    let currentMessageId: string | undefined;
     if (interactive) {
-      await this.d.conversation.append("user", event.text, event.channel);
+      const m = await this.d.conversation.append("user", event.text, event.channel, {
+        forwarded: event.provenance.isForwarded,
+        sourceRef: event.provenance.sourceRef,
+      });
+      currentMessageId = m.id;
+      await this.archive(m, event);
     }
+    const ctx = this.makeContext(event, currentMessageId);
+    const toolCalls: AgentResult["toolCalls"] = [];
 
     const recent = await this.d.conversation.recent();
     const messages: ChatMessage[] = [
@@ -128,7 +150,7 @@ export class AgentCore {
     for (; rounds < MAX_TOOL_ROUNDS; rounds++) {
       let resp;
       try {
-        resp = await this.d.model.complete({ messages, tools });
+        resp = await model.complete({ messages, tools });
       } catch (e) {
         const msg = (e as Error).message;
         await this.d.receipts.log({
@@ -139,7 +161,7 @@ export class AgentCore {
           performed: false,
           status: "error",
         });
-        return { reply: "", iterations: rounds, error: msg };
+        return { reply: "", iterations: rounds, error: msg, toolCalls };
       }
 
       if (resp.toolCalls.length === 0) {
@@ -159,6 +181,7 @@ export class AgentCore {
         const result = parseError
           ? { ok: false, status: "error", message: parseError }
           : await this.d.dispatcher.dispatch(call.name, args, ctx);
+        toolCalls.push({ name: call.name, ok: result.ok === true, status: String(result.status) });
         messages.push({
           role: "tool",
           content: JSON.stringify(result),
@@ -168,7 +191,8 @@ export class AgentCore {
       }
     }
 
-    if (rounds >= MAX_TOOL_ROUNDS && reply === "") {
+    const capped = rounds >= MAX_TOOL_ROUNDS && reply === "";
+    if (capped) {
       await this.d.receipts.log({
         tool: "agent_loop",
         input: { eventId: event.eventId },
@@ -191,13 +215,45 @@ export class AgentCore {
           status: "empty_reply",
         });
       } else {
-        await this.d.conversation.append("assistant", reply, event.channel);
+        const m = await this.d.conversation.append("assistant", reply, event.channel);
+        await this.archive(m, event);
+      }
+      if (this.d.afterOwnerTurn) {
+        try {
+          await this.d.afterOwnerTurn();
+        } catch (e) {
+          await this.d.receipts.log({
+            tool: "memory_review_timer",
+            input: { eventId: event.eventId },
+            result: { error: (e as Error).message },
+            trigger: event.trigger,
+            performed: false,
+            status: "error",
+          });
+        }
       }
     }
 
     await this.summarizeIfNeeded(event.channel);
 
-    return { reply, iterations: rounds };
+    return { reply, iterations: rounds, toolCalls, ...(capped ? { capped: true } : {}) };
+  }
+
+  /** Copy a stored message to the dated R2 archive. A failure is a receipt, never silent. */
+  private async archive(m: import("../types.js").StoredMessage, event: JarvisEvent): Promise<void> {
+    if (!this.d.archive) return;
+    try {
+      await this.d.archive.append({ id: m.id, at: m.createdAt, role: m.role, content: m.content, channel: m.channel });
+    } catch (e) {
+      await this.d.receipts.log({
+        tool: "archive_append",
+        input: { messageId: m.id },
+        result: { error: (e as Error).message },
+        trigger: event.trigger,
+        performed: false,
+        status: "error",
+      });
+    }
   }
 
   /**
@@ -231,11 +287,11 @@ export class AgentCore {
         performed: false,
         status: "error",
       });
-      return { reply: "", iterations: 0, error: msg };
+      return { reply: "", iterations: 0, error: msg, toolCalls: [] };
     }
     const reply = resp.content;
     if (reply.trim() !== "") call.guestHistory.push({ role: "assistant", content: reply });
-    return { reply, iterations: 0 };
+    return { reply, iterations: 0, toolCalls: [] };
   }
 
   private async currentSystemPrompt(channel: Channel): Promise<string> {
@@ -252,7 +308,7 @@ export class AgentCore {
   /** Code triggers the summary (size cap); the MODEL writes it. */
   private async summarizeIfNeeded(channel: Channel): Promise<void> {
     if (!(await this.d.conversation.needsSummary())) return;
-    const all = await this.d.conversation.all();
+    const all = await this.d.conversation.context();
     const keep = 15;
     const toSummarizeCount = Math.max(0, all.length - keep);
     if (toSummarizeCount <= 0) return;
@@ -273,7 +329,17 @@ export class AgentCore {
       });
       const summary = resp.content.trim();
       if (summary !== "") {
+        // Rolled-up messages stay in the record; the summary only replaces them in context.
         await this.d.conversation.applySummary(summary, toSummarizeCount);
+      } else {
+        await this.d.receipts.log({
+          tool: "summarize",
+          input: { channel, count: toSummarizeCount },
+          result: { note: "model returned an empty summary; context left as is and retried next turn" },
+          trigger: "wakeup",
+          performed: false,
+          status: "empty_reply",
+        });
       }
     } catch (e) {
       await this.d.receipts.log({

@@ -58,6 +58,10 @@ export class DeepSeekModel implements Model {
     this.firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? 30_000;
   }
 
+  get name(): string {
+    return this.model;
+  }
+
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const body = {
       model: this.model,

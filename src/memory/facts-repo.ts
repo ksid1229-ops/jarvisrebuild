@@ -13,6 +13,31 @@ export interface SaveFactInput {
   /** Required. For temporary facts the model MUST supply a real instant. */
   expiresAt: string | null;
   pinned?: boolean;
+  /** The stored message this fact rests on (messages.id), when there is one. */
+  sourceMessageId?: string | null;
+}
+
+/** A correction is a new version with its OWN provenance: the turn that corrected it. */
+export interface CorrectFactInput {
+  text: string;
+  kind: FactKind;
+  confidence: FactConfidence;
+  expiresAt: string | null;
+  reason: string;
+  sourceType: Fact["sourceType"];
+  sourceRef: string;
+  sourceMessageId: string | null;
+}
+
+/** Correcting an outdated version would fork the chain; the caller must correct the head. */
+export class SupersededFactError extends Error {
+  constructor(
+    readonly factId: string,
+    readonly currentId: string,
+  ) {
+    super(`fact ${factId} is an outdated version; the current version is ${currentId}. Correct that one.`);
+    this.name = "SupersededFactError";
+  }
 }
 
 /**
@@ -23,13 +48,7 @@ export interface SaveFactInput {
 export interface FactsStore {
   save(input: SaveFactInput): Promise<Fact>;
   get(id: string): Promise<Fact | undefined>;
-  correct(
-    factId: string,
-    newText: string,
-    confidence: FactConfidence,
-    kind: FactKind,
-    expiresAt: string | null,
-  ): Promise<Fact>;
+  correct(factId: string, input: CorrectFactInput): Promise<Fact>;
   forget(id: string): Promise<Fact>;
   restore(id: string): Promise<Fact>;
   confirm(id: string): Promise<Fact>;
@@ -42,9 +61,29 @@ export interface FactsStore {
   /** Pure check on a fact object (no storage read), so it stays sync. */
   isActive(f: Fact, now?: number): boolean;
   all(): Promise<Fact[]>;
+  /** Record that the fact's embedding is in the meaning-search index. */
+  markIndexed(id: string, indexed: boolean): Promise<void>;
+  /** Active facts missing from the index, oldest first, up to `limit`; plus the total. */
+  unindexedActive(limit: number): Promise<{ facts: Fact[]; total: number }>;
 }
 
-/** Active = not hidden, not expired, not superseded. Shared by both stores. */
+/** Walk superseded_by forward to the current version. */
+async function headOf(store: Pick<FactsStore, "get">, f: Fact): Promise<Fact> {
+  let cur = f;
+  for (let i = 0; i < 10_000 && cur.supersededBy; i++) {
+    const next = await store.get(cur.supersededBy);
+    if (!next) break;
+    cur = next;
+  }
+  return cur;
+}
+
+/**
+ * THE suppression predicate. Active = not hidden, not superseded, not expired.
+ * Every read path that feeds the model goes through it: activeFacts and
+ * pinnedFacts in both stores (D1 filters in SQL first, then re-checks here, so
+ * the SQL can never be the only guard), and memory_search per hit.
+ */
 export function factIsActive(f: Fact, now: number): boolean {
   if (f.hidden) return false;
   if (f.supersededBy) return false;
@@ -69,6 +108,9 @@ export class FactsRepo implements FactsStore {
       supersededBy: null,
       hidden: false,
       pinned: input.pinned ?? false,
+      sourceMessageId: input.sourceMessageId ?? null,
+      correctionReason: null,
+      indexed: false,
     };
     this.facts.set(fact.id, fact);
     return fact;
@@ -79,28 +121,11 @@ export class FactsRepo implements FactsStore {
   }
 
   /** memory_correct: new version linked to the old; old is superseded, never erased. */
-  async correct(
-    factId: string,
-    newText: string,
-    confidence: FactConfidence,
-    kind: FactKind,
-    expiresAt: string | null,
-  ): Promise<Fact> {
+  async correct(factId: string, input: CorrectFactInput): Promise<Fact> {
     const old = this.facts.get(factId);
     if (!old) throw new Error(`fact ${factId} does not exist`);
-    const next: Fact = {
-      id: newId("fact"),
-      text: newText,
-      kind,
-      confidence,
-      sourceType: old.sourceType,
-      sourceRef: old.sourceRef,
-      createdAt: this.clock.nowIso(),
-      expiresAt,
-      supersededBy: null,
-      hidden: false,
-      pinned: old.pinned,
-    };
+    if (old.supersededBy) throw new SupersededFactError(factId, (await headOf(this, old)).id);
+    const next = newVersion(old, input, this.clock.nowIso());
     this.facts.set(next.id, next);
     old.supersededBy = next.id;
     return next;
@@ -168,11 +193,51 @@ export class FactsRepo implements FactsStore {
     return [...this.facts.values()];
   }
 
+  async markIndexed(id: string, indexed: boolean): Promise<void> {
+    this.mustGet(id).indexed = indexed;
+  }
+
+  async unindexedActive(limit: number): Promise<{ facts: Fact[]; total: number }> {
+    const all = (await this.activeFacts()).filter((f) => !f.indexed);
+    return { facts: all.slice(0, limit), total: all.length };
+  }
+
   private mustGet(id: string): Fact {
     const f = this.facts.get(id);
     if (!f) throw new Error(`fact ${id} does not exist`);
     return f;
   }
+}
+
+function newVersion(old: Fact, input: CorrectFactInput, nowIso: string): Fact {
+  return {
+    id: newId("fact"),
+    text: input.text,
+    kind: input.kind,
+    confidence: input.confidence,
+    sourceType: input.sourceType,
+    sourceRef: input.sourceRef,
+    createdAt: nowIso,
+    expiresAt: input.expiresAt,
+    supersededBy: null,
+    hidden: false,
+    pinned: old.pinned,
+    sourceMessageId: input.sourceMessageId,
+    correctionReason: input.reason,
+    indexed: false,
+  };
+}
+
+const INSERT_FACT = `INSERT INTO facts (id, text, kind, confidence, source_type, source_ref,
+  created_at, expires_at, superseded_by, hidden, pinned, source_message_id, correction_reason, indexed)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+function factParams(f: Fact): unknown[] {
+  return [
+    f.id, f.text, f.kind, f.confidence, f.sourceType, f.sourceRef, f.createdAt, f.expiresAt,
+    f.supersededBy, f.hidden ? 1 : 0, f.pinned ? 1 : 0, f.sourceMessageId, f.correctionReason,
+    f.indexed ? 1 : 0,
+  ];
 }
 
 function rowToFact(row: D1Row): Fact {
@@ -188,6 +253,9 @@ function rowToFact(row: D1Row): Fact {
     supersededBy: optStr(row.superseded_by, "facts.superseded_by"),
     hidden: bool(row.hidden, "facts.hidden"),
     pinned: bool(row.pinned, "facts.pinned"),
+    sourceMessageId: optStr(row.source_message_id, "facts.source_message_id"),
+    correctionReason: optStr(row.correction_reason, "facts.correction_reason"),
+    indexed: bool(row.indexed, "facts.indexed"),
   };
 }
 
@@ -211,19 +279,11 @@ export class D1FactsRepo implements FactsStore {
       supersededBy: null,
       hidden: false,
       pinned: input.pinned ?? false,
+      sourceMessageId: input.sourceMessageId ?? null,
+      correctionReason: null,
+      indexed: false,
     };
-    await this.db
-      .prepare(
-        `INSERT INTO facts (id, text, kind, confidence, source_type, source_ref,
-         created_at, expires_at, superseded_by, hidden, pinned)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        fact.id, fact.text, fact.kind, fact.confidence, fact.sourceType, fact.sourceRef,
-        fact.createdAt, fact.expiresAt, fact.supersededBy, fact.hidden ? 1 : 0,
-        fact.pinned ? 1 : 0,
-      )
-      .run();
+    await this.db.prepare(INSERT_FACT).bind(...factParams(fact)).run();
     return fact;
   }
 
@@ -232,43 +292,22 @@ export class D1FactsRepo implements FactsStore {
     return row ? rowToFact(row) : undefined;
   }
 
-  async correct(
-    factId: string,
-    newText: string,
-    confidence: FactConfidence,
-    kind: FactKind,
-    expiresAt: string | null,
-  ): Promise<Fact> {
+  async correct(factId: string, input: CorrectFactInput): Promise<Fact> {
     const old = await this.get(factId);
     if (!old) throw new Error(`fact ${factId} does not exist`);
-    const next: Fact = {
-      id: newId("fact"),
-      text: newText,
-      kind,
-      confidence,
-      sourceType: old.sourceType,
-      sourceRef: old.sourceRef,
-      createdAt: this.clock.nowIso(),
-      expiresAt,
-      supersededBy: null,
-      hidden: false,
-      pinned: old.pinned,
-    };
-    await this.db
-      .prepare(
-        `INSERT INTO facts (id, text, kind, confidence, source_type, source_ref,
-         created_at, expires_at, superseded_by, hidden, pinned)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        next.id, next.text, next.kind, next.confidence, next.sourceType, next.sourceRef,
-        next.createdAt, next.expiresAt, next.supersededBy, 0, next.pinned ? 1 : 0,
-      )
-      .run();
-    await this.db
-      .prepare(`UPDATE facts SET superseded_by = ? WHERE id = ?`)
+    if (old.supersededBy) throw new SupersededFactError(factId, (await headOf(this, old)).id);
+    const next = newVersion(old, input, this.clock.nowIso());
+    await this.db.prepare(INSERT_FACT).bind(...factParams(next)).run();
+    // Guarded link: only succeeds if nobody superseded the old version meanwhile.
+    const linked = await this.db
+      .prepare(`UPDATE facts SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL`)
       .bind(next.id, factId)
       .run();
+    if (linked.changes !== 1) {
+      await this.db.prepare(`DELETE FROM facts WHERE id = ?`).bind(next.id).run();
+      const again = await this.mustGet(factId);
+      throw new SupersededFactError(factId, (await headOf(this, again)).id);
+    }
     return next;
   }
 
@@ -325,7 +364,8 @@ export class D1FactsRepo implements FactsStore {
       )
       .bind(this.clock.nowIso())
       .all<D1Row>();
-    return res.results.map(rowToFact);
+    const now = this.clock.nowMs();
+    return res.results.map(rowToFact).filter((f) => factIsActive(f, now));
   }
 
   async pinnedFacts(): Promise<Fact[]> {
@@ -336,7 +376,8 @@ export class D1FactsRepo implements FactsStore {
       )
       .bind(this.clock.nowIso())
       .all<D1Row>();
-    return res.results.map(rowToFact);
+    const now = this.clock.nowMs();
+    return res.results.map(rowToFact).filter((f) => factIsActive(f, now));
   }
 
   isActive(f: Fact, now = this.clock.nowMs()): boolean {
@@ -344,8 +385,17 @@ export class D1FactsRepo implements FactsStore {
   }
 
   async all(): Promise<Fact[]> {
-    const res = await this.db.prepare(`SELECT * FROM facts`).all<D1Row>();
+    const res = await this.db.prepare(`SELECT * FROM facts ORDER BY rowid ASC`).all<D1Row>();
     return res.results.map(rowToFact);
+  }
+
+  async markIndexed(id: string, indexed: boolean): Promise<void> {
+    await this.db.prepare(`UPDATE facts SET indexed = ? WHERE id = ?`).bind(indexed ? 1 : 0, id).run();
+  }
+
+  async unindexedActive(limit: number): Promise<{ facts: Fact[]; total: number }> {
+    const all = (await this.activeFacts()).filter((f) => !f.indexed);
+    return { facts: all.slice(0, limit), total: all.length };
   }
 
   private async mustGet(id: string): Promise<Fact> {

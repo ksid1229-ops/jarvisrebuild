@@ -2,12 +2,14 @@ import type { Clock } from "../clock.js";
 import { newId } from "../ids.js";
 import type { D1Db, D1Row } from "../persistence/d1.js";
 import { str } from "../persistence/d1.js";
-import type { Wakeup } from "../types.js";
+import type { Wakeup, WakeupKind } from "../types.js";
 
 /** Stores wake-ups. A Durable Object holds ONE alarm, so the scheduler keeps the
  * list here and always points the alarm at the earliest (see WakeupScheduler). */
 export interface WakeupsStore {
-  add(fireAtIso: string, reason: string): Promise<Wakeup>;
+  add(fireAtIso: string, reason: string, kind?: WakeupKind): Promise<Wakeup>;
+  /** Remove every wake-up of a kind (used to debounce the system review timer). Returns how many. */
+  removeKind(kind: WakeupKind): Promise<number>;
   get(id: string): Promise<Wakeup | undefined>;
   remove(id: string): Promise<boolean>;
   /** Oldest fire time first. */
@@ -18,15 +20,26 @@ export class WakeupsRepo implements WakeupsStore {
   private readonly wakeups = new Map<string, Wakeup>();
   constructor(private readonly clock: Clock) {}
 
-  async add(fireAtIso: string, reason: string): Promise<Wakeup> {
+  async add(fireAtIso: string, reason: string, kind: WakeupKind = "owner"): Promise<Wakeup> {
     const w: Wakeup = {
       id: newId("wake"),
       fireAt: new Date(fireAtIso).toISOString(),
       reason,
       createdAt: this.clock.nowIso(),
+      kind,
     };
     this.wakeups.set(w.id, w);
     return w;
+  }
+  async removeKind(kind: WakeupKind): Promise<number> {
+    let n = 0;
+    for (const [id, w] of this.wakeups) {
+      if (w.kind === kind) {
+        this.wakeups.delete(id);
+        n += 1;
+      }
+    }
+    return n;
   }
   async get(id: string): Promise<Wakeup | undefined> {
     return this.wakeups.get(id);
@@ -45,6 +58,7 @@ function rowToWakeup(row: D1Row): Wakeup {
     fireAt: str(row.fire_at, "wakeups.fire_at"),
     reason: str(row.reason, "wakeups.reason"),
     createdAt: str(row.created_at, "wakeups.created_at"),
+    kind: str(row.kind, "wakeups.kind") as WakeupKind,
   };
 }
 
@@ -55,18 +69,24 @@ export class D1WakeupsRepo implements WakeupsStore {
     private readonly clock: Clock,
   ) {}
 
-  async add(fireAtIso: string, reason: string): Promise<Wakeup> {
+  async add(fireAtIso: string, reason: string, kind: WakeupKind = "owner"): Promise<Wakeup> {
     const w: Wakeup = {
       id: newId("wake"),
       fireAt: new Date(fireAtIso).toISOString(),
       reason,
       createdAt: this.clock.nowIso(),
+      kind,
     };
     await this.db
-      .prepare(`INSERT INTO wakeups (id, fire_at, reason, created_at) VALUES (?, ?, ?, ?)`)
-      .bind(w.id, w.fireAt, w.reason, w.createdAt)
+      .prepare(`INSERT INTO wakeups (id, fire_at, reason, created_at, kind) VALUES (?, ?, ?, ?, ?)`)
+      .bind(w.id, w.fireAt, w.reason, w.createdAt, w.kind)
       .run();
     return w;
+  }
+
+  async removeKind(kind: WakeupKind): Promise<number> {
+    const res = await this.db.prepare(`DELETE FROM wakeups WHERE kind = ?`).bind(kind).run();
+    return res.changes;
   }
 
   async get(id: string): Promise<Wakeup | undefined> {

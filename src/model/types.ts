@@ -51,6 +51,8 @@ export interface ModelResponse {
  * there is no key, construction fails loudly (see MissingModelKeyError).
  */
 export interface Model {
+  /** Model id, recorded on memory runs and receipts. */
+  readonly name?: string;
   complete(request: ModelRequest): Promise<ModelResponse>;
 }
 

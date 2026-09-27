@@ -34,6 +34,8 @@ export interface ToolContext {
   eventId: string;
   /** The current owner message text, for provenance quote verification. */
   ownerMessageText: string;
+  /** messages.id of the current message once stored (live owner turns only). */
+  currentMessageId?: string;
 
   facts: FactsStore;
   conversation: ConversationStore;

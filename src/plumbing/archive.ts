@@ -1,8 +1,10 @@
 import type { Clock } from "../clock.js";
 import type { Tool, ToolContext, ToolResult } from "../jarvis/tool-types.js";
 import type { Bucket } from "./bucket.js";
+import { newId } from "../ids.js";
 
 export interface ArchiveEntry {
+  id: string;
   at: string;
   role: string;
   content: string;
@@ -10,45 +12,61 @@ export interface ArchiveEntry {
 }
 
 /**
- * Every conversation (texts and call transcripts) saved to R2 by date, and
- * searchable. It processes ALL matching entries across the date range (with a
- * high system-protection cap that REPORTS anything dropped), never a silent
- * subset.
+ * Every conversation message (texts and call transcripts) copied to R2 by date,
+ * searchable. The agent core appends every stored message as it happens.
+ *
+ * One object per message (archive/YYYY-MM-DD/<at>_<id>.json): appends never
+ * read-modify-write a shared daily file, so two overlapping turns cannot lose
+ * each other's lines. Search reads only the days inside the requested range, and
+ * processes ALL matches up to a high system-protection cap that REPORTS drops.
  */
 export class ArchiveService {
   constructor(private readonly bucket: Bucket, private readonly clock: Clock) {}
 
-  private keyFor(iso: string): string {
-    return `archive/${iso.slice(0, 10)}.jsonl`;
-  }
-
-  async append(entry: Omit<ArchiveEntry, "at"> & { at?: string }): Promise<void> {
+  async append(entry: Omit<ArchiveEntry, "at" | "id"> & { at?: string; id?: string }): Promise<string> {
     const at = entry.at ?? this.clock.nowIso();
-    const key = this.keyFor(at);
-    const existing = (await this.bucket.get(key)) ?? "";
-    const line = JSON.stringify({ at, role: entry.role, content: entry.content, channel: entry.channel });
-    await this.bucket.put(key, existing === "" ? line : `${existing}\n${line}`);
+    const id = entry.id ?? newId("arc");
+    const key = `archive/${at.slice(0, 10)}/${at}_${id}.json`;
+    const record: ArchiveEntry = { id, at, role: entry.role, content: entry.content, channel: entry.channel };
+    await this.bucket.put(key, JSON.stringify(record));
+    return key;
   }
 
   async search(query: string, range?: { fromIso?: string; toIso?: string }): Promise<{ results: ArchiveEntry[]; dropped: number }> {
     const from = range?.fromIso ? new Date(range.fromIso).getTime() : -Infinity;
     const to = range?.toIso ? new Date(range.toIso).getTime() : Infinity;
+    const fromDay = range?.fromIso ? new Date(range.fromIso).toISOString().slice(0, 10) : "";
+    const toDay = range?.toIso ? new Date(range.toIso).toISOString().slice(0, 10) : "9999-12-31";
     const q = query.toLowerCase();
-    const keys = await this.bucket.list("archive/");
+    const keys = await this.keysFor(fromDay, toDay);
     const matches: ArchiveEntry[] = [];
     for (const key of keys) {
+      const day = key.slice("archive/".length, "archive/".length + 10);
+      if (day < fromDay || day > toDay) continue;
       const blob = await this.bucket.get(key);
       if (!blob) continue;
-      for (const line of blob.split("\n")) {
-        if (line.trim() === "") continue;
-        const entry = JSON.parse(line) as ArchiveEntry;
-        const t = new Date(entry.at).getTime();
-        if (t < from || t > to) continue;
-        if (entry.content.toLowerCase().includes(q)) matches.push(entry);
-      }
+      const entry = JSON.parse(blob) as ArchiveEntry;
+      const t = new Date(entry.at).getTime();
+      if (t < from || t > to) continue;
+      if (entry.content.toLowerCase().includes(q)) matches.push(entry);
     }
     const HARD_CAP = 500;
     return { results: matches.slice(0, HARD_CAP), dropped: Math.max(0, matches.length - HARD_CAP) };
+  }
+
+  /** A bounded range lists only its days; an open range lists everything. */
+  private async keysFor(fromDay: string, toDay: string): Promise<string[]> {
+    if (fromDay === "" || toDay === "9999-12-31") return this.bucket.list("archive/");
+    const start = Date.parse(`${fromDay}T00:00:00.000Z`);
+    const end = Date.parse(`${toDay}T00:00:00.000Z`);
+    const days = Math.round((end - start) / 86_400_000) + 1;
+    if (days > 400) return this.bucket.list("archive/");
+    const keys: string[] = [];
+    for (let i = 0; i < days; i++) {
+      const day = new Date(start + i * 86_400_000).toISOString().slice(0, 10);
+      keys.push(...(await this.bucket.list(`archive/${day}/`)));
+    }
+    return keys;
   }
 }
 

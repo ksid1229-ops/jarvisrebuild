@@ -34,11 +34,17 @@ export interface PendingStore {
   confirm(id: string, ownerId: string, currentEventId: string): Promise<PendingAction>;
   cancel(id: string, ownerId: string): Promise<PendingAction>;
   markExecuted(id: string): Promise<void>;
+  /** Every stored action (for the backup). */
+  all(): Promise<PendingAction[]>;
 }
 
 export class PendingActionsRepo implements PendingStore {
   private readonly actions = new Map<string, PendingAction>();
   constructor(private readonly clock: Clock) {}
+
+  async all(): Promise<PendingAction[]> {
+    return [...this.actions.values()];
+  }
 
   async create(input: CreatePendingInput): Promise<PendingAction> {
     const now = this.clock.nowMs();
@@ -129,6 +135,11 @@ export class D1PendingActionsRepo implements PendingStore {
     private readonly db: D1Db,
     private readonly clock: Clock,
   ) {}
+
+  async all(): Promise<PendingAction[]> {
+    const res = await this.db.prepare(`SELECT * FROM pending_actions ORDER BY rowid ASC`).all<D1Row>();
+    return res.results.map(rowToPending);
+  }
 
   async create(input: CreatePendingInput): Promise<PendingAction> {
     const now = this.clock.nowMs();

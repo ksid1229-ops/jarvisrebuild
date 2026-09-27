@@ -97,7 +97,7 @@ describe("Phase 2: memory", () => {
     expect(await h.facts.activeFacts()).toHaveLength(1);
     h.clock.advance(2000);
     expect(await h.facts.activeFacts()).toHaveLength(0);
-    const after = await memorySearch.run({ query: "away weekend" }, ctx);
+    const after = await memorySearch.run({ query: "away weekend", limit: 5 }, ctx);
     expect(((after.data as any).results as any[])).toHaveLength(0);
   });
 
@@ -111,7 +111,10 @@ describe("Phase 2: memory", () => {
       sourceRef: "x",
       expiresAt: null,
     });
-    const f2 = await h.facts.correct(f1.id, "Sid has an iPhone 16", "stated", "durable", null);
+    const f2 = await h.facts.correct(f1.id, {
+      text: "Sid has an iPhone 16", confidence: "stated", kind: "durable", expiresAt: null,
+      reason: "upgraded", sourceType: "conversation", sourceRef: "y", sourceMessageId: null,
+    });
     expect((await h.facts.get(f1.id))!.supersededBy).toBe(f2.id);
     const chain = await h.facts.explain(f2.id);
     expect(chain.map((f) => f.text)).toEqual(["Sid has an iPhone 15", "Sid has an iPhone 16"]);
@@ -142,7 +145,7 @@ describe("Phase 2: memory", () => {
     await memorySave.run({ text: "Sid hates mornings", kind: "durable", confidence: "inferred" }, ctx);
     // A voice-channel context queries the same repos.
     const voiceCtx = h.ctxFor(ownerEvent("what do you know", "call1", { channel: "voice", trigger: "call" }));
-    const found = await memorySearch.run({ query: "mornings" }, voiceCtx);
+    const found = await memorySearch.run({ query: "mornings", limit: 5 }, voiceCtx);
     expect(((found.data as any).results as any[]).length).toBeGreaterThan(0);
   });
 });
