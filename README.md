@@ -85,16 +85,17 @@ wrangler d1 create jarvis                     # copy the printed id into wrangle
 wrangler r2 bucket create jarvis-archive
 wrangler r2 bucket create jarvis-backup
 wrangler vectorize create jarvis-memory --dimensions=768 --metric=cosine
+wrangler queues create jarvis-work
 ```
 
 The Vectorize index must be 768 dimensions / cosine: that is what the Workers AI embedding model
-(`@cf/baai/bge-base-en-v1.5`) produces.
+(`@cf/baai/bge-base-en-v1.5`) produces. The queue carries inbound-email wake-ups.
 
 Every release, **in this order**:
 
 ```powershell
 cd $HOME\jarvisrebuild
-wrangler d1 migrations apply jarvis --remote   # 1. schema first (0003 adds columns the new code writes)
+wrangler d1 migrations apply jarvis --remote   # 1. schema first (0004 adds emails/pc tables the new code writes)
 wrangler deploy                                # 2. then the code
 ```
 
@@ -107,6 +108,62 @@ wrangler secret put WATCHDOG_PING_URL          # your Healthchecks.io ping URL
 `MEMORY_EXTRACTION_MODEL` (a `[vars]` entry in `wrangler.toml`) makes memory reviews run on a
 different model. Leave it unset to use the main model.
 
+## Email (in and out)
+
+Inbound: Cloudflare Email Routing hands every message for `school@onesid.ca` to the Worker
+(`async email()`), which parses it, archives the untouched `.eml` to the ARCHIVE bucket, stores
+it in D1 and wakes the brain over the queue. Set it up after your first deploy:
+
+1. In the Cloudflare dashboard, your domain (`onesid.ca`) → **Email** → **Email Routing** →
+   enable it.
+2. Add a **Custom address** `school@onesid.ca` with the action **Send to a Worker** →
+   `jarvis-rebuild`. (Your existing auto-forwards from your personal and school inboxes stay as
+   they are — they feed this address.)
+3. Nothing else to configure: the Worker's `email()` handler does the rest, and the
+   `email_list` / `email_read` tools let Jarvis look back at any of it.
+
+Outbound: `send_email` (one of the five confirmed actions) sends from your real accounts —
+**personal** = `ksid1229@gmail.com` via the Gmail API, **school** =
+`sk7qq09@limestone.on.ca` via Microsoft Graph. Jarvis picks the account; code never defaults it.
+An account whose secrets are unset simply returns `not connected`, so you can wire one first.
+
+```powershell
+cd $HOME\jarvisrebuild
+wrangler secret put GMAIL_CLIENT_ID
+wrangler secret put GMAIL_CLIENT_SECRET
+wrangler secret put GMAIL_REFRESH_TOKEN
+wrangler secret put MS_GRAPH_CLIENT_ID
+wrangler secret put MS_GRAPH_CLIENT_SECRET
+wrangler secret put MS_GRAPH_REFRESH_TOKEN
+wrangler secret put MS_GRAPH_TENANT_ID
+```
+
+Each account needs OAuth credentials (a one-time consent; the refresh token then lasts while the
+app stays authorized): Gmail — Google Cloud Console, enable the Gmail API, OAuth consent
+(Desktop app), run the flow once with `access_type=offline`, exchange the code for a refresh
+token. Microsoft — Azure Portal, App registration (Delegated, `Mail.Send` + `offline_access`),
+same idea. Ask in the chat for the exact click-path if you want it.
+
+## The Windows PC agent
+
+`apps/pc-agent` is Jarvis's hands on your PC: it runs at logon, pulls queued jobs (PowerShell,
+open-a-page, drive-your-real-Chrome), reports results, and syncs the Obsidian vault hourly.
+Install it (PowerShell):
+
+```powershell
+cd $HOME\jarvisrebuild
+wrangler secret put PC_AGENT_TOKEN            # a long random string; the agent needs the same value
+cd apps\pc-agent
+.\scripts\install-task.ps1 -JarvisUrl "https://<your-worker>.<your-subdomain>.workers.dev" `
+    -PcToken "<the PC_AGENT_TOKEN value>" -VaultToken "<the VAULT_EXPORT_TOKEN value>" `
+    -VaultDir "$HOME\Documents\Obsidian\Sid\Jarvis"
+```
+
+`spend_money` (confirmed, like all five actions) queues a checkout on your PC: your real Chrome
+opens the page and tries Chrome's own autofill for the saved card ending 2286 — Jarvis never
+holds the card number and the payment itself is never auto-submitted. When the PC is off, the
+job waits in D1 and runs when the PC checks in. Details and options: `apps/pc-agent/README.md`.
+
 ## What works today
 
 See `PROGRESS.md` for the exact, verified list. In short: text conversations, memory (save,
@@ -116,11 +173,14 @@ confirmation and shadow mode, receipts, wake-ups (Durable Object alarm + hourly 
 R2, the conversation archive, the school receiver, **inbound phone calls** (Twilio
 ConversationRelay WebSocket on the Durable Object; owner PIN and guest PIN by voice or keypad),
 **SMS as a second text channel** next to Telegram (same brain; replies go back on the channel you
-used), **Jarvis phoning you** (`call_place`), and **texting or one-way calling someone for you**
-after you confirm (`contact_on_behalf`). All the Twilio parts are tested against fakes only —
-none has run on a live Twilio number yet. **Not built yet:** email in/out, two-way calls to other
-people (`make_call` says `not connected`), and the Windows PC agent. The other action tools
-(spend money, send email, submit school work) say `not connected` rather than pretending.
+used), **Jarvis phoning you** (`call_place`), **texting or one-way calling someone for you**
+after you confirm (`contact_on_behalf`), **two-way calls to other people** (`make_call`: a real
+spoken conversation carrying only the reason you confirmed; the transcript is kept as proof),
+**email in and out** (Cloudflare Email Routing → queue → the same brain; sending from your real
+Gmail and school accounts), and the **Windows PC agent** (shell, open-page and Chrome-driving
+jobs, plus the Obsidian vault sync). The still-not-connected action is `submit_schoolwork`
+(the School Helper is read-only by design). All the Twilio, Gmail/Graph and browser-automation
+parts are tested against fakes only — none has run on a live number, inbox or checkout yet.
 
 Searches have no hidden caps: leave `limit` off and Jarvis gets every match (paged with
 `offset`). The one ceiling left is Vectorize's own 100 results per meaning search, which the

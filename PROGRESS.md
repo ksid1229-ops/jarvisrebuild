@@ -1,23 +1,71 @@
 # Jarvis rebuild — PROGRESS
 
-**Status (2026-09-26, session arena/01a0e025):** all 7 phases' feature code + D1 persistence +
-school receiver/pull channel + memory hardening + **audit fixes and the inbound-call WebSocket
-loop** (this session, see "Session: audit response" at the end). **167/167 tests green**,
-`tsc --noEmit` clean, school app untouched (not re-run this session — no files there changed).
+**Status (2026-09-27, session arena/01a0e05b):** all 7 phases + D1 persistence + school surface
++ memory hardening + audit fixes + SMS/phone out + **email in/out, the Windows PC agent,
+spend_money via the PC, and two-way make_call** (this session, see "Session: connectors" at the
+end). **Root 242/242, pc-agent 26/26, school-helper 238/238 tests green**; `tsc --noEmit` clean
+in all three projects. 15 new guards mutation-checked (each planted fault turned a test red).
+Nothing is deployed; Sid does production deploys.
 
-**Exact next step:** rebuild the remaining connectors that were reported done but NEVER PUSHED
-(see "Lost work" below): Cloudflare email in (school@onesid.ca) + Gmail API / MS Graph out,
-Twilio REST (outbound call/SMS), and the Windows PC agent. Nothing here is deployed; Sid does
-production deploys.
+**Exact next step:** nothing left that was promised. Deploy-time work is Sid's (README has the
+ordered steps: D1 migrate 0004 → create the queue → deploy → secrets → Email Routing → PC agent
+install). Optional follow-ups, only if Sid asks: wiring the ConversationRelay `end_call`
+handoff message, MMS attachment reading (currently named-but-not-opened), and a
+`memory_delete` debate (forget is reversible-hide by design).
+
+### Session: connectors (2026-09-27, branch arena/01a0e05b-jarvisrebuild)
+
+Rebuilt in one line each (all under rebuild-equivalent paths in this standalone repo):
+
+- `migrations/0004_email_pc.sql` — emails, pc_jobs (queued/delivered/done/failed),
+  pc_heartbeat tables.
+- `src/email/mime.ts` — defensive RFC 822/MIME reader (folding, multipart, base64,
+  quoted-printable, RFC 2047 words); every limitation is a warning, never a guess. The raw
+  .eml is archived untouched so parsing shortfalls lose nothing.
+- `src/email/email-repo.ts` — inbound email store (in-memory + D1).
+- `src/email/email-worker.ts` — acceptInboundEmail: archive → store → wake; excerpt cap
+  reports exactly how many characters were dropped.
+- `src/email/outbound.ts` — Gmail API (personal) + Microsoft Graph (school), OAuth
+  refresh-token flows, per-account fail-closed, provider errors surfaced verbatim (redacted).
+- `src/email/email-tools.ts` — email_list (no cap, model pages with `since`) + email_read.
+- `src/pc/pc-jobs-repo.ts` + `src/pc/pc-tools.ts` — the D1-backed PC job queue, heartbeat,
+  pc_status / pc_execute tools; PC_ONLINE_WINDOW_MS = 5 min.
+- `src/confirmations/action-tools.ts` — send_email live (model MUST pick the account; no
+  default), spend_money queues a browser job on the PC (card HINT "ending 2286" only — no
+  card number exists anywhere in the repo), make_call places a real two-way call.
+- `src/voice/external-prompt.ts` + relay/agent-core external session — a third party on a
+  call Jarvis placed gets a minimal prompt with ONLY the confirmed brief (leak-tested against
+  seeded pinned facts), one tool (end_call), a transcript kept as a receipt (never stored as
+  conversation, so memory extraction can't mistake their words for Sid's), and a wake when the
+  call ends. Voicemail → hang up without leaving anything, honestly reported.
+- `src/index.ts` — Worker `email()` handler (rejects the mail when D1 is missing — a bounce,
+  not a silent drop), `queue()` consumer (retry then give up loudly), token-gated
+  `/pc/heartbeat|pull|result` routes, DO `/email` and `/pc/result` wakes.
+- `apps/pc-agent/` — the Windows daemon (heartbeat + pull every 30s), shell runner
+  (PowerShell on Windows, timeout + output caps that report truncation), open_url (honest
+  "asked the browser"), browser runner (Playwright driving his REAL Chrome profile; autofill
+  by keyboard only, never types digits; honest failure when playwright/profile missing),
+  vault-sync (processes EVERY note — tested at 101 — idempotent, path-escape rejection,
+  count mismatch is a hard error), install-task.ps1 (config.json + 2 Task Scheduler tasks).
+- `wrangler.toml` — jarvis-work queue producer + consumer.
+
+**Faked for testing, and why:** Twilio/Gmail/Graph run against fake fetches (no live accounts
+in the sandbox — honest statuses only, e.g. gmail_403 with the provider's text); the PC agent's
+browser runner is tested against a fake Playwright module (real Playwright code is thin and
+real but has NOT been run against actual Chrome — flagged below).
+
+**Unverified, said plainly:** the keyboard-autofill technique (focus card field → ArrowDown →
+Enter) is best-effort; whether it selects the saved card on a given checkout page can only be
+proven on Sid's PC. The result reports cardFilled true/false either way and never claims a
+purchase. ConversationRelay's exact outbound `setup` fields (to vs from) are per docs, untested
+live; the signed-URL match stays the trust anchor.
 
 ### Lost work (verified from git, not memory)
 
-The previous session's final report claimed a commit with email in/out, Twilio REST, the
+The 2026-09-26 session's final report claimed a commit with email in/out, Twilio REST, the
 ConversationRelay WebSocket loop, the PC agent app, a Vectorize adapter and migration 0003, with
-"363 tests". **That commit never reached GitHub.** `git ls-remote` shows the old session branch
-`arena/01a0dfb2-jarvisrebuild` ending at `930a2c4` (school app fix); none of those files exist on
-any branch. This session started from `930a2c4` (105 tests). The Vectorize adapter was rebuilt
-this session; email, Twilio REST/WS and the PC agent still need rebuilding.
+"363 tests". **That commit never reached GitHub.** Everything it described has now actually
+been built and pushed (this session and the SMS/phone-out session before it).
 
 **Sid's locked answers (2026-09-26, via popup):**
 - spend_money = browser autofill: Jarvis drives the checkout, clicks his saved card ending
@@ -27,6 +75,8 @@ this session; email, Twilio REST/WS and the PC agent still need rebuilding.
 - Outbound email = his real accounts, model picks by recipient unless told: Gmail API for
   ksid1229@gmail.com, Microsoft Graph for sk7qq09@limestone.on.ca (MX proves M365).
 - PC offline = QUEUE: record it, say it's queued, run it when the PC checks in.
+- 20-minute quiet period before a memory review (kept); forgotten facts stay in the vault
+  export (labelled); search limits are the model's choice, code caps nothing.
 
 ---
 
@@ -43,6 +93,15 @@ npm run typecheck
 
 ## What is built (file → one line)
 
+- `src/email/mime.ts` — defensive inbound MIME reader; warnings, never guesses.
+- `src/email/email-repo.ts` — inbound email store (in-memory + D1).
+- `src/email/email-worker.ts` — acceptInboundEmail (archive raw .eml → D1 row → wake text with drop counts).
+- `src/email/outbound.ts` — Gmail API + MS Graph senders; per-account fail-closed.
+- `src/email/email-tools.ts` — email_list / email_read (no caps; the model pages).
+- `src/pc/pc-jobs-repo.ts` — the PC job queue (queued → delivered → done/failed; D1).
+- `src/pc/pc-tools.ts` — pc heartbeat + pc_status / pc_execute; spend_money enqueue helper (card hint only).
+- `src/voice/external-prompt.ts` — the third-party call prompt: ONLY the confirmed brief.
+- `apps/pc-agent/` — the Windows daemon + shell/open_url/browser runners + vault-sync + install-task.ps1.
 - `src/clock.ts` — injected Clock (SystemClock + FixedClock); no direct Date.now (trap #4).
 - `src/env.ts` — Worker bindings; documents which missing config FAILS CLOSED.
 - `src/types.ts` — domain types (Fact, Provenance, Receipt, PendingAction, …).
@@ -644,20 +703,21 @@ and the outbound relay are all tested against fakes. Unknowns for the first live
   - voicemail silent; relay checks `from` on outbound; no opening turn
   - no prompt channels line
 
-### Still to rebuild
-- Email in/out, with Queues.
-- The Windows PC agent and vault sync script.
-- `spend_money` via PC autofill.
-- Two-way `make_call`.
-- `resetAlarm()` on DO start.
-- A live check of the wrangler bindings.
+### Still to rebuild (updated 2026-09-27)
+- ~~Email in/out, with Queues.~~ — built (session: connectors).
+- ~~The Windows PC agent and vault sync script.~~ — built (apps/pc-agent).
+- ~~`spend_money` via PC autofill.~~ — built (browser job, card hint only, never auto-submits payment).
+- ~~Two-way `make_call`.~~ — built (external minimal prompt + transcript receipt).
+- `resetAlarm()` on DO start (so an alarm lost to an eviction re-arms without waiting for cron).
+- A live check of the wrangler bindings (deploy-time; Sid runs it).
+- `submit_schoolwork` stays `not_connected` by product rule (School Helper is read-only).
 
-## Signature (this session, SMS + outbound)
+## Signature (this session, connectors)
 
 Built by:
 - Model name and version (as you know yourself): UNKNOWN (Arena.ai Agent Mode; not disclosed for signing)
 - Company that made you: UNKNOWN
 - Reasoning / effort level (if known): UNKNOWN
 - Knowledge cutoff: UNKNOWN
-- Session date and time (UTC): 2026-09-26 (time of day UNKNOWN)
-- Phases completed this session: Phase 2 (uncapped search, memory_list, vault labels), Phase 7 (vault school notes), Phase 1 (SMS second channel), Phase 5 (call_place, outbound relay, call outcomes), Phase 4 (contact_on_behalf wired to Twilio)
+- Session date and time (UTC): 2026-09-27 (time of day UNKNOWN)
+- Phases completed this session: Phase 1 (email channel: Cloudflare Email Routing in, queue consumer), Phase 4 (send_email live with account choice, spend_money via PC), Phase 5 (two-way make_call with external-party isolation), Phase 7 (PC agent, vault sync, R2 email archive)
