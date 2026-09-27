@@ -1,0 +1,19 @@
+{
+  "name": "jarvis-pc-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Jarvis's hands on Sid's Windows 11 PC: pulls queued jobs (shell, open_url, browser) from the Jarvis Worker and syncs the Obsidian vault.",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/agent.js",
+    "vault-sync": "node dist/vault-sync.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.0"
+  }
+}
