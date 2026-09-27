@@ -127,13 +127,13 @@ describe("stated facts rest on one real message of Sid's", () => {
     const ctx = h.ctxFor(ownerEvent("memory review", "w2", { trigger: "wakeup" }));
     const base = { text: "t", kind: "durable", confidence: "stated" };
 
-    const ok = await memorySave.run({ ...base, quote: "night shifts", source_message_id: sid.id }, ctx);
+    const ok = await memorySave.run({ ...base, quote: "switched to night shifts", source_message_id: sid.id }, ctx);
     expect(ok.ok).toBe(true);
     expect((await h.facts.get((ok.data as any).id))!.sourceMessageId).toBe(sid.id);
 
-    expect((await memorySave.run({ ...base, quote: "switched banks", source_message_id: fwd.id }, ctx)).status).toBe("refused");
-    expect((await memorySave.run({ ...base, quote: "switched your alarm", source_message_id: mine.id }, ctx)).status).toBe("refused");
-    expect((await memorySave.run({ ...base, quote: "day shifts", source_message_id: sid.id }, ctx)).status).toBe("refused");
+    expect((await memorySave.run({ ...base, quote: "I switched banks", source_message_id: fwd.id }, ctx)).status).toBe("refused");
+    expect((await memorySave.run({ ...base, quote: "switched your alarm", source_message_id: mine.id }, ctx)).status).toBe("refused"); // 3 words but not Sid's
+    expect((await memorySave.run({ ...base, quote: "switched to day shifts", source_message_id: sid.id }, ctx)).status).toBe("refused"); // 4 words, but not in his message
     expect((await memorySave.run({ ...base, quote: "x", source_message_id: "msg_nope" }, ctx)).status).toBe("refused");
   });
 
@@ -145,7 +145,7 @@ describe("stated facts rest on one real message of Sid's", () => {
     const args = { fact_id: f.id, new_text: "Sid has an iPhone 16", confidence: "stated", kind: "durable", reason: "he upgraded" };
 
     expect((await memoryCorrect.run(args, ctx)).status).toBe("refused"); // no quote
-    const ok = await memoryCorrect.run({ ...args, quote: "iPhone 16" }, ctx);
+    const ok = await memoryCorrect.run({ ...args, quote: "I got the iPhone 16" }, ctx);
     expect(ok.ok).toBe(true);
     const next = (await h.facts.get((ok.data as any).id))!;
     expect(next.correctionReason).toBe("he upgraded");

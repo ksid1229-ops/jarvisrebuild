@@ -55,7 +55,14 @@ export class ArchiveService {
       if (entry.content.toLowerCase().includes(q)) matches.push(entry);
     }
     // No count cap (Sid: Jarvis gets as much as he needs). Paging is the model's choice.
-    matches.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    // Ties on `at` (same-millisecond turns, common under a fixed clock or fast
+    // exchanges) break by role then id, so ordering is deterministic even with
+    // random UUID ids: the user's message precedes Jarvis's reply.
+    matches.sort((a, b) => {
+      if (a.at !== b.at) return a.at < b.at ? -1 : 1;
+      if (a.role !== b.role) return a.role === "user" ? -1 : 1;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
     const offset = page.offset ?? 0;
     const results = matches.slice(offset, page.limit === undefined ? undefined : offset + page.limit);
     const shown = offset + results.length;

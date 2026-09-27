@@ -71,12 +71,20 @@ export const receiptsQuery: Tool = {
   },
 };
 
+/**
+ * The ONLY keys the model may write (audit round 2: it used to accept any key,
+ * which made internal bookkeeping — outbound-call records, the Telegram dedupe
+ * ledger, the memory-review cursor — writable and corruptible).
+ */
+const SETTABLE_KEY = /^(shadow|shadow:[A-Za-z0-9_-]+|persona)$/;
+
 export const settingsUpdate: Tool = {
   name: "settings_update",
   description:
-    "Change a setting because Sid asked. The main one is shadow mode: settings_update(key='shadow', " +
-    "value='on') makes action tools log what they WOULD do instead of doing it; value='off' turns it " +
-    "back on live. Per-feature shadow uses key='shadow:<feature>'.",
+    "Change a setting because Sid asked. shadow: 'on' makes action tools log what they WOULD do instead " +
+    "of doing it; 'off' goes back live. Per-feature shadow uses key='shadow:<feature>'. persona: replaces " +
+    "your persona (who you are and how you talk) with Sid's words — only when he explicitly asks to change " +
+    "it. Those are the only settable keys; everything else in settings is internal.",
   parameters: {
     type: "object",
     properties: { key: { type: "string" }, value: { type: "string" } },
@@ -86,6 +94,21 @@ export const settingsUpdate: Tool = {
     const key = String(args.key ?? "");
     const value = String(args.value ?? "");
     if (key === "") return { ok: false, status: "refused", message: "key is required." };
+    if (!SETTABLE_KEY.test(key)) {
+      return {
+        ok: false,
+        status: "refused",
+        message:
+          `'${key}' is not a settable setting — internal keys (call records, dedupe ledger, review cursors) " +
+          "are off limits. Settable: shadow, shadow:<feature>, persona.`,
+      };
+    }
+    if (key !== "persona" && value !== "on" && value !== "off") {
+      return { ok: false, status: "refused", message: `value for '${key}' must be 'on' or 'off'; got ${JSON.stringify(value)}.` };
+    }
+    if (key === "persona" && value.trim() === "") {
+      return { ok: false, status: "refused", message: "persona cannot be blank." };
+    }
     await ctx.settings.set(key, value);
     return { ok: true, status: "ok", message: `set ${key}=${value}` };
   },

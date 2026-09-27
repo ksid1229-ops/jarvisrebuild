@@ -217,7 +217,9 @@ wrangler secret put PUBLIC_ORIGIN         # exactly the origin in step 2, e.g. h
 signs that exact URL and Jarvis refuses any call or text whose signature does not check out. It is
 also the address Jarvis gives Twilio when it phones you. On a call you can say your PIN or type it
 on the keypad (`*` clears, `#` sends early). Three wrong PINs lock PIN entry for the rest of that
-call; hang up and call back to try again.
+call; hang up and call back to try again. PINs are stored salted (`v1$salt$hash`, a fresh salt per
+PIN); a legacy unsalted hash from an older deploy still verifies, so upgrading does not reset
+your PIN.
 
 Texts from any number other than `OWNER_PHONE_E164` are ignored. Depending on your Twilio
 number's country and type, Twilio may require it to be registered for messaging (for example A2P

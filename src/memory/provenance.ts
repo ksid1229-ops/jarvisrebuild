@@ -18,9 +18,23 @@ export class ProvenanceError extends Error {
 }
 
 /**
+ * A quote must be at least this many of Sid's words to count as provenance.
+ * This is a validation floor, not a judgment: one word ("mornings") can be
+ * found inside a sentence that says the opposite, so a single word is not
+ * evidence a fact was STATED. The model can always quote the full phrase —
+ * or save the fact as inferred.
+ */
+export const MIN_QUOTE_WORDS = 3;
+
+/**
  * Verify that `quote` appears in `sourceMessage`. Throws ProvenanceError if not.
- * Comparison is whitespace-normalized and case-insensitive; it is a substring
- * check, not a similarity score.
+ * Comparison is case-insensitive and whitespace-normalized. Two rules, both
+ * validation:
+ *  1. The quote's words must appear as a CONTIGUOUS run of whole words — a
+ *     quote may not match mid-word ("nate morn" ⊄ "concatenate mornings").
+ *  2. The quote must be at least MIN_QUOTE_WORDS words — a one-word quote is
+ *     not provenance (audit round 2: quote "mornings" passed against
+ *     "i hate mornings in theory but not really").
  */
 export function verifyQuote(quote: string, sourceMessage: string): void {
   const q = normalizeForQuote(quote);
@@ -28,11 +42,31 @@ export function verifyQuote(quote: string, sourceMessage: string): void {
   if (q.length === 0) {
     throw new ProvenanceError("A stated fact must quote Sid's words; the quote was empty.");
   }
-  if (!src.includes(q)) {
+  const qWords = words(q);
+  if (qWords.length < MIN_QUOTE_WORDS) {
     throw new ProvenanceError(
-      "Provenance check failed: the quoted text does not appear in Sid's message.",
+      `A stated fact needs a real quote: at least ${MIN_QUOTE_WORDS} of Sid's words, exactly as he said them ` +
+        `(yours had ${qWords.length}). A single word is not provenance — quote the full phrase, or save the fact as inferred.`,
     );
   }
+  const sWords = words(src);
+  outer: for (let i = 0; i + qWords.length <= sWords.length; i++) {
+    for (let j = 0; j < qWords.length; j++) {
+      if (sWords[i + j] !== qWords[j]) continue outer;
+    }
+    return; // contiguous whole-word run found
+  }
+  throw new ProvenanceError(
+    "Provenance check failed: the quoted text does not appear in Sid's message.",
+  );
+}
+
+/** Split a normalized string into words with leading/trailing punctuation stripped. */
+function words(normalized: string): string[] {
+  return normalized
+    .split(" ")
+    .filter((w) => w !== "")
+    .map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
 }
 
 /** What a verified "stated" fact rests on. */

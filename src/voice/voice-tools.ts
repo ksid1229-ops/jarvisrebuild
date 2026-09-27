@@ -46,7 +46,9 @@ export const guestCreate: Tool = {
   description:
     "Grant a guest limited phone access. name, phone (E.164), access (free text: exactly what they may " +
     "hear/do), expiry (RFC3339 UTC), pin (4 digits for them to enter). The guest gets none of your " +
-    "profile or tools.",
+    "profile or tools. This grants a real permission — a phone line to this assistant — so it is one " +
+    "of the actions Sid is asked to confirm first.",
+  confirmable: true,
   parameters: {
     type: "object",
     properties: {

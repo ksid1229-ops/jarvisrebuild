@@ -1,12 +1,14 @@
 /** Id generation and canonical argument hashing. */
 
-let seq = 0;
-
-/** Monotonic, sortable-ish id. Not cryptographic; only needs to be unique. */
+/**
+ * Collision-safe id: a UUID under a prefix. Audit round 2: this used to be
+ * Date.now + a per-isolate counter + Math.random, which is unique within one
+ * isolate but only PROBABLY unique across isolates, evictions and retries —
+ * and it is the primary key of every table. crypto.randomUUID is available in
+ * Workers and Node 18+.
+ */
 export function newId(prefix = "id"): string {
-  seq += 1;
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `${prefix}_${Date.now().toString(36)}_${seq.toString(36)}_${rand}`;
+  return `${prefix}_${crypto.randomUUID()}`;
 }
 
 /** Canonical JSON: object keys sorted recursively, so equal args hash equally. */

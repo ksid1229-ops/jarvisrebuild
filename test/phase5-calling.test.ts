@@ -6,7 +6,7 @@ import { GuestsRepo } from "../src/voice/guests-repo.js";
 import { buildGuestPrompt } from "../src/voice/guest-prompt.js";
 import { buildConnectTwiml } from "../src/voice/twiml.js";
 import { verifyTwilioSignature } from "../src/voice/twilio-signature.js";
-import { makeOwnerPinVerifier, hashPin } from "../src/voice/pin.js";
+import { makeOwnerPinVerifier, hashPin, verifyHashedPin } from "../src/voice/pin.js";
 import { FixedClock } from "../src/clock.js";
 import { InMemoryPcHeartbeatRepo } from "../src/pc/pc-tools.js";
 import { InMemoryPcJobsRepo } from "../src/pc/pc-jobs-repo.js";
@@ -139,9 +139,14 @@ describe("Phase 5: calling", () => {
     expect(await verifyTwilioSignature(undefined, url, params, b64)).toBe(false); // fail closed
   });
 
-  it("hashPin is not reversible plaintext", async () => {
+  it("hashPin is salted, not reversible plaintext, and verifies", async () => {
     const hash = await hashPin("1234", "pep");
     expect(hash).not.toContain("1234");
-    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^v1\$[0-9a-f]{32}\$[0-9a-f]{64}$/); // per-PIN random salt + digest
+    const hash2 = await hashPin("1234", "pep");
+    expect(hash2).not.toBe(hash); // a fresh salt every time
+    await expect(verifyHashedPin("1234", hash, "pep")).resolves.toBe(true);
+    await expect(verifyHashedPin("0000", hash, "pep")).resolves.toBe(false);
+    await expect(verifyHashedPin("1234", hash, "other-pepper")).resolves.toBe(false);
   });
 });

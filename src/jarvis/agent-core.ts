@@ -159,7 +159,10 @@ export class AgentCore {
 
     const recent = await this.d.conversation.recent();
     const messages: ChatMessage[] = [
-      { role: "system", content: await this.currentSystemPrompt(event.channel, event.provenance.medium) },
+      {
+        role: "system",
+        content: await this.currentSystemPrompt(event.channel, event.provenance.medium, event.provenance.isForwarded),
+      },
       ...recent.map((m): ChatMessage => ({ role: m.role, content: m.content })),
     ];
     if (!interactive) {
@@ -429,10 +432,15 @@ export class AgentCore {
     return { reply, iterations: rounds, toolCalls };
   }
 
-  private async currentSystemPrompt(channel: Channel, medium?: import("../types.js").TextMedium): Promise<string> {
+  private async currentSystemPrompt(
+    channel: Channel,
+    medium?: import("../types.js").TextMedium,
+    forwarded?: boolean,
+  ): Promise<string> {
     const textChannels = this.d.textChannels ? await this.d.textChannels() : undefined;
     return buildSystemPrompt({
       ...(medium ? { medium } : {}),
+      ...(forwarded ? { forwarded: true } : {}),
       ...(textChannels ? { textChannels } : {}),
       nowIso: this.d.clock.nowIso(),
       timezone: this.d.timezone,

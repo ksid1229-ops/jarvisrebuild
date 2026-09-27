@@ -19,6 +19,7 @@ import { AgentCore } from "./agent-core.js";
 import { makeConfirmTools, receiptsQuery, sendText, settingsUpdate } from "./core-tools.js";
 import type { OwnerChannel } from "./tool-types.js";
 import { ConnectedAppsRepo, type ConnectedAppsStore } from "../apps/app-registry.js";
+import { AppEventsRepo, type AppEventsStore } from "../apps/app-events.js";
 import { AppManager } from "../apps/app-manager.js";
 import { appTools } from "../apps/app-tools.js";
 import { HttpAppConnector, type AppConnector } from "../apps/connector.js";
@@ -90,6 +91,7 @@ export interface BuildInput {
     emails?: EmailsStore;
     pcJobs?: PcJobsStore;
     pcHeartbeat?: PcHeartbeatStore;
+    appEvents?: AppEventsStore;
   };
   /**
    * D1 database. When present, the school surface (collector keys, evidence,
@@ -140,6 +142,8 @@ export interface BuiltJarvis {
   pcJobs: PcJobsStore | undefined;
   /** PC heartbeat store, when the PC surface is wired. */
   pcHeartbeat: PcHeartbeatStore | undefined;
+  /** The SHARED app-event store (audit round 2: was rebuilt per event, losing everything). */
+  appEvents: AppEventsStore;
 }
 
 /** Wire the whole brain together. Used by the DO, local runner and tests. */
@@ -162,6 +166,7 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     ? { rest: input.phone.rest, ownerPhone: input.phone.ownerPhone, publicOrigin: input.phone.publicOrigin, settings }
     : undefined;
 
+  const appEvents = input.stores?.appEvents ?? new AppEventsRepo(input.clock);
   const emails = input.stores?.emails ?? (input.db ? new D1EmailsRepo(input.db) : new InMemoryEmailsRepo());
   const emailServices: EmailServices = { repo: emails, ...(input.emailSender ? { sender: input.emailSender } : {}) };
 
@@ -296,5 +301,6 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     emailSender: input.emailSender,
     pcJobs: pcServices ? pcJobs : undefined,
     pcHeartbeat: pcServices ? pcHeartbeat : undefined,
+    appEvents,
   };
 }

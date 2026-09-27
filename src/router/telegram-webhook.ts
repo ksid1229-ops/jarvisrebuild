@@ -3,6 +3,8 @@ import type { Provenance } from "../types.js";
 
 export interface AcceptedTelegramUpdate {
   chatId: string;
+  /** Telegram's update_id — the dedupe key for webhook retries (audit round 2). */
+  updateId: string;
   messageId: string;
   text: string;
   provenance: Provenance;
@@ -94,6 +96,7 @@ export function verifyTelegramWebhook(
     status: 200,
     update: {
       chatId,
+      updateId: String(body?.update_id ?? ""),
       messageId,
       text,
       provenance,

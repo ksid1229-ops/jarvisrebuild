@@ -4,7 +4,21 @@ import { SupersededFactError } from "./facts-repo.js";
 import type { Channel, Fact, FactConfidence, FactKind } from "../types.js";
 
 const KINDS: FactKind[] = ["durable", "temporary"];
-const CONFIDENCES: FactConfidence[] = ["stated", "inferred", "confirmed"];
+/**
+ * What memory_save / memory_correct accept. "confirmed" is deliberately NOT
+ * here: the model must not certify its own fact as owner-confirmed (audit
+ * round 2). An inference becomes confirmed only through memory_confirm, after
+ * Sid actually verifies it.
+ */
+const SAVE_CONFIDENCES: FactConfidence[] = ["stated", "inferred"];
+
+/** Runtime refusal for the self-certifying value, with the honest path named. */
+function refusedConfirmed(): ToolResult {
+  return refused(
+    "confidence 'confirmed' cannot be set by you — that would certify your own fact as owner-confirmed. " +
+      "Save it as 'stated' (with Sid's exact quote) or 'inferred', then use memory_confirm once Sid has actually verified it.",
+  );
+}
 const CHANNELS: Channel[] = ["text", "voice"];
 
 function refused(message: string): ToolResult {
@@ -103,9 +117,10 @@ export const memorySave: Tool = {
     "kind: 'durable' for things that stay true (he has an iPhone 16), 'temporary' for things " +
     "that expire (he's away this weekend) — a temporary fact REQUIRES expires_at as an RFC3339 " +
     "UTC instant. " +
-    "confidence: 'stated' if Sid said it (you MUST also pass quote: his exact words, which must " +
-    "appear in his message — forwarded texts are not his words), 'inferred' if you concluded it, " +
-    "'confirmed' only once Sid confirms an inference. confidence is required and never defaulted. " +
+    "confidence: 'stated' if Sid said it (you MUST also pass quote: at least three of his exact words, " +
+    "which must appear in his message — forwarded texts are not his words), 'inferred' if you concluded it. " +
+    "'confirmed' is not yours to set — save stated or inferred, then memory_confirm once Sid verifies. " +
+    "confidence is required and never defaulted. " +
     SOURCE_DOC +
     "Example: memory_save(text='Sid hates mornings', kind='durable', confidence='stated', " +
     "quote='i hate mornings').",
@@ -114,8 +129,8 @@ export const memorySave: Tool = {
     properties: {
       text: { type: "string", description: "The fact, in your words." },
       kind: { type: "string", enum: KINDS, description: "durable or temporary" },
-      confidence: { type: "string", enum: CONFIDENCES, description: "stated | inferred | confirmed" },
-      quote: { type: "string", description: "Required when confidence='stated': Sid's exact words." },
+      confidence: { type: "string", enum: SAVE_CONFIDENCES, description: "stated | inferred" },
+      quote: { type: "string", description: "Required when confidence='stated': at least three of Sid's exact words." },
       source_message_id: { type: "string", description: "Optional: the msg_... id this fact rests on." },
       expires_at: { type: "string", description: "Required when kind='temporary': RFC3339 UTC instant." },
       pinned: { type: "boolean", description: "Set true only for core-profile facts." },
@@ -128,7 +143,8 @@ export const memorySave: Tool = {
     const kind = args.kind as FactKind;
     if (!KINDS.includes(kind)) return badEnum("kind", args.kind, KINDS);
     const confidence = args.confidence as FactConfidence;
-    if (!CONFIDENCES.includes(confidence)) return badEnum("confidence", args.confidence, CONFIDENCES);
+    if (confidence === "confirmed") return refusedConfirmed();
+    if (!SAVE_CONFIDENCES.includes(confidence)) return badEnum("confidence", args.confidence, SAVE_CONFIDENCES);
 
     let expiresAt: string | null = null;
     if (kind === "temporary") {
@@ -173,7 +189,7 @@ export const memoryCorrect: Tool = {
     properties: {
       fact_id: { type: "string" },
       new_text: { type: "string" },
-      confidence: { type: "string", enum: CONFIDENCES },
+      confidence: { type: "string", enum: SAVE_CONFIDENCES },
       kind: { type: "string", enum: KINDS },
       expires_at: { type: "string", description: "Required when kind='temporary'." },
       quote: { type: "string", description: "Required when confidence='stated': Sid's exact words." },
@@ -192,7 +208,8 @@ export const memoryCorrect: Tool = {
     const kind = args.kind as FactKind;
     if (!KINDS.includes(kind)) return badEnum("kind", args.kind, KINDS);
     const confidence = args.confidence as FactConfidence;
-    if (!CONFIDENCES.includes(confidence)) return badEnum("confidence", args.confidence, CONFIDENCES);
+    if (confidence === "confirmed") return refusedConfirmed();
+    if (!SAVE_CONFIDENCES.includes(confidence)) return badEnum("confidence", args.confidence, SAVE_CONFIDENCES);
     let expiresAt: string | null = null;
     if (kind === "temporary") {
       expiresAt = realInstant(args.expires_at);
@@ -267,8 +284,18 @@ export const memoryForget = simpleFactTool(
 
 export const memoryRestore = simpleFactTool(
   "memory_restore",
-  "Un-hide a previously forgotten fact.",
+  "Un-hide a previously forgotten fact (the current version — an old version that was corrected " +
+    "cannot be restored; correct the current fact instead).",
   async (ctx, id) => {
+    const existing = await ctx.facts.get(id);
+    if (!existing) return refused(`fact ${id} does not exist.`);
+    if (existing.supersededBy) {
+      return refused(
+        `fact ${id} is an OLD VERSION — it was corrected; the current wording is ${existing.supersededBy}. ` +
+          "Restoring the old wording would bring back text that is no longer true. Restore the current version " +
+          "if it was hidden, or memory_correct the current fact to change it.",
+      );
+    }
     const f = await ctx.facts.restore(id);
     const indexError = await indexFact(ctx, f);
     return withIndexNote({ ok: true, status: "ok", message: `Restored fact ${id}` }, indexError);

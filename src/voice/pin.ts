@@ -37,13 +37,31 @@ export function makeOwnerPinVerifier(configuredPin?: string, pepper?: string): O
   };
 }
 
-/** Hash a guest PIN for storage. */
+/**
+ * Hash a guest PIN for storage. Every PIN gets its OWN RANDOM SALT, embedded in
+ * the stored string ("v1$<saltHex>$<sha256(salt:pepper:pin)>"), so the 10,000
+ * possible 4-digit PINs cannot be precomputed against a leaked guests table
+ * (audit round 2: this used to be a bare, unsalted SHA-256). The pepper, when
+ * configured, adds a secret on top of the salt.
+ */
 export async function hashPin(pin: string, pepper = ""): Promise<string> {
-  return sha256hex(`${pepper}:${pin}`);
+  const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+  const saltHex = [...saltBytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const h = await sha256hex(`${saltHex}:${pepper}:${pin}`);
+  return `v1$${saltHex}$${h}`;
 }
 
 export async function verifyHashedPin(entered: string, hash: string, pepper = ""): Promise<boolean> {
   if (!FOUR_DIGITS.test(entered)) return false;
+  if (hash.startsWith("v1$")) {
+    const parts = hash.split("$");
+    if (parts.length !== 3 || parts[0] !== "v1" || parts[1] === "" || parts[2] === "") return false;
+    const got = await sha256hex(`${parts[1]!}:${pepper}:${entered}`);
+    return timingSafeEqualHex(got, parts[2]!);
+  }
+  // Legacy rows (pre-salt, bare pepper-only hash). Nothing was deployed with
+  // them, but a hash that is not v1$ still verifies the old way rather than
+  // silently locking everyone out.
   const got = await sha256hex(`${pepper}:${entered}`);
   return timingSafeEqualHex(got, hash);
 }

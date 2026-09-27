@@ -9,6 +9,8 @@ import { str } from "../persistence/d1.js";
 export interface SettingsStore {
   get(key: string): Promise<string | undefined>;
   set(key: string, value: string): Promise<void>;
+  /** Remove a key (used by the Telegram retry-dedupe rollback). */
+  delete(key: string): Promise<void>;
   all(): Promise<Record<string, string>>;
   /** Global shadow mode. Default OFF, but explicit — not a silent default of behaviour. */
   isShadow(): Promise<boolean>;
@@ -23,6 +25,9 @@ export class SettingsRepo implements SettingsStore {
   }
   async set(key: string, value: string): Promise<void> {
     this.map.set(key, value);
+  }
+  async delete(key: string): Promise<void> {
+    this.map.delete(key);
   }
   async all(): Promise<Record<string, string>> {
     return Object.fromEntries(this.map);
@@ -47,6 +52,10 @@ export class D1SettingsRepo implements SettingsStore {
 
   async set(key: string, value: string): Promise<void> {
     await this.db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).bind(key, value).run();
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.db.prepare(`DELETE FROM settings WHERE key = ?`).bind(key).run();
   }
 
   async all(): Promise<Record<string, string>> {

@@ -1,17 +1,52 @@
 # Jarvis rebuild — PROGRESS
 
-**Status (2026-09-27, session arena/01a0e05b):** all 7 phases + D1 persistence + school surface
-+ memory hardening + audit fixes + SMS/phone out + **email in/out, the Windows PC agent,
-spend_money via the PC, and two-way make_call** (this session, see "Session: connectors" at the
-end). **Root 242/242, pc-agent 26/26, school-helper 238/238 tests green**; `tsc --noEmit` clean
-in all three projects. 15 new guards mutation-checked (each planted fault turned a test red).
-Nothing is deployed; Sid does production deploys.
+**Status (2026-09-26 evening, session arena/01a0e05b):** all 7 phases + D1 persistence + school
+surface + memory hardening + audit round 1 + SMS/phone out + email in/out, the Windows PC agent,
+spend_money via the PC, and two-way make_call — plus **audit round 2** (this session: 14 claims
+verified against HEAD, 12 real/partial and fixed, 2 stale; see "Session: audit round 2" below).
+**Root 267/267, pc-agent 26/26, school-helper 238/238 tests green**; `tsc --noEmit` clean in all
+three projects. **30 guards mutation-checked across the two audit rounds** (each planted fault
+turned a test red before it was reverted). Nothing is deployed; Sid does production deploys.
 
 **Exact next step:** nothing left that was promised. Deploy-time work is Sid's (README has the
 ordered steps: D1 migrate 0004 → create the queue → deploy → secrets → Email Routing → PC agent
 install). Optional follow-ups, only if Sid asks: wiring the ConversationRelay `end_call`
 handoff message, MMS attachment reading (currently named-but-not-opened), and a
 `memory_delete` debate (forget is reversible-hide by design).
+
+## Session: audit round 2 (2026-09-26, branch arena/01a0e05b-jarvisrebuild)
+
+Sid pasted a second external audit (7 headline defects + 7 new findings). Same rule as round 1:
+every claim verified against HEAD `02bbc76` before touching code. Verdicts: 12 real or partially
+real (all fixed), 2 stale (already fixed on this branch — not re-fixed, see the table).
+
+| # | Finding | On this branch | What was done |
+|---|---|---|---|
+| 1 | Stated facts could be "proven" by a substring (mid-word quote match) | **Real** | `verifyQuote` now tokenizes and requires a contiguous whole-word run of ≥3 of Sid's words (edge punctuation stripped, unicode-aware). Quotes the full phrase or save as inferred. |
+| 2 | `memory_save`/`memory_correct` accepted self-certified `confidence: "confirmed"` | **Real** | Schema enum is `stated | inferred`; runtime rejects anything else and names `memory_confirm` as the only honest path to "confirmed". |
+| 3 | `memory_restore` could resurrect superseded wording | **Partial** (search already post-filtered inactive facts) | `memory_restore` refuses facts with `supersededBy` and points at the current id. |
+| 4 | Voice PIN: unlimited guesses + unsalted 4-digit hashes | **Split** — the per-call attempt limit already existed (`MAX_PIN_FAILURES_PER_CALL = 3`); the unsalted hashes were real | `hashPin` is now `v1$<32-hex-salt>$<sha256(salt:pepper:pin)>` with a fresh 16-byte salt per PIN; `verifyHashedPin` parses v1$ and still verifies legacy bare hashes (no forced PIN reset at deploy). |
+| 5 | DO identity: first-chatId-wins meant a stranger could claim the brain | **Real** | `ensureBuilt()` takes no chat id — identity is single-sourced from `env.OWNER_CHAT_ID` (throws if unset); the Telegram route 403s any other chat id. |
+| 6 | No Telegram webhook retry dedupe | **Real** | `update_id` captured; dedupe key `tg_dedupe:<update_id>` in settings. At-least-once: key written before the turn, deleted if the turn throws, so a crash mid-turn lets the retry reprocess. |
+| 7 | FakeEmbeddingProvider could serve production silently | **Partial** — the DO already used Workers AI or an honest-failure provider, never the fake | Made loud: boot-time warns when `AI` is unbound (and `MEMORY_VECTORS`, from round's earlier fix); app events now go through ONE shared store on the built brain instead of a throwaway per-request repo. |
+| 8 | Wake-up alarm never set | **Stale** | Already fixed on this branch (index.ts:574 passes `storage.setAlarm`, :802 implements `alarm()`). Not re-fixed. |
+| 9 | `guest_create` executed without confirmation | **Real** | `confirmable: true` — a guest line is a grant of access; Sid confirms first ("Just to be sure…"). |
+| 10 | Nightly backup dropped pending confirmations | **Real** | Backup includes `pending_actions: () => pending.all()`. |
+| 11 | `isForwarded` was dropped before the prompt | **Real** | Wired through `agent-core` → system prompt: a FORWARDED message is labelled NOT Sid's own words — evidence about the sender, remembered as `inferred`, never `stated`. |
+| 12 | `settings_update` could write any key (clobber dedupe/cursors) | **Real** | Allowlist `^(shadow|shadow:<feature>|persona)$` with value validation; `tg_dedupe:`, `outbound_call:`, review cursors refused. |
+| 13 | `newId` was collision-prone (timestamp+seq) | **Real** | `crypto.randomUUID()`. This exposed a latent archive-ordering instability (ties broken by id) — archive sort now breaks ties by role (user before assistant) then id, deterministically. |
+| 14 | `applySummary` discarded rolled-up messages | **Stale** | Already fixed on this branch (`rolledUp = true` keeps the rows). Not re-fixed. |
+
+**Tests:** new `test/audit-round2.test.ts` (25 tests, each named for the defect it kills).
+**Mutation sweep (run 2026-09-26, after the fixes):** all 15 guards planted back one at a time
+— quote floor, whole-word match, confirmed-confidence, restore-superseded, unsalted PIN, guest
+unconfirmed, missing chat-id 403, no dedupe, per-request event repo, settings any-key, forwarded
+line dropped, empty backup pending, weak ids, archive role flip, AI-unbound warn — **15/15 turned
+the suite red, then reverted; suite green after restore (267/267).**
+
+**Open question for Sid (asked, not yet answered):** should `call_place` (calling a business for
+Sid) require confirmation like the other five PIN actions? Currently it does not — it places a
+call, not a spend. Say the word and it joins the confirm list.
 
 ### Session: connectors (2026-09-27, branch arena/01a0e05b-jarvisrebuild)
 

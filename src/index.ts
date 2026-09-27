@@ -490,8 +490,18 @@ export class JarvisDurableObject {
 
   constructor(private readonly state: DurableObjectState, private readonly env: Env) {}
 
-  private ensureBuilt(chatId: string): ReturnType<typeof buildJarvis> {
+  /**
+   * Build (once) or return the one brain. Identity is single-sourced from
+   * OWNER_CHAT_ID (audit round 2): the DO ignores per-request chat ids so
+   * `built.ownerId` can never become "whichever chat arrived first". Telegram
+   * updates are checked against OWNER_CHAT_ID at the webhook AND again here.
+   */
+  private ensureBuilt(): ReturnType<typeof buildJarvis> {
     if (this.built) return this.built;
+    const chatId = this.env.OWNER_CHAT_ID?.trim();
+    if (!chatId) {
+      throw new Error("OWNER_CHAT_ID is not configured; the DO refuses to build a brain for an unknown owner.");
+    }
     const clock = new SystemClock();
 
     // The model. No key => no model. We do NOT fall back to a keyword bot.
@@ -515,12 +525,31 @@ export class JarvisDurableObject {
     // Embeddings: Workers AI, or an honest failure. Never the bag-of-words test fake.
     const ai = this.env.AI as { run(model: string, input: unknown): Promise<any> } | undefined;
     const embeddings = ai ? new WorkersAiEmbeddingProvider(ai) : new UnavailableEmbeddingProvider();
+    if (!ai) {
+      // Loud on purpose (audit round 2, claim 7): no silent fallback to a fake.
+      // UnavailableEmbeddingProvider fails every embedding call honestly, but the
+      // deploy misconfiguration should be visible at boot, not at first memory_search.
+      console.warn(
+        "AI is not bound: meaning search will FAIL (no embeddings provider). " +
+          "Bind Workers AI (AI binding) for production — the bag-of-words fake is tests-only.",
+      );
+    }
+
     // Vector index: Vectorize (persists across evictions). Without the binding the
     // in-memory index is used and forgets on eviction — facts stay safe in D1 and
     // memory_search reports how many are not indexed.
     const vectors = this.env.MEMORY_VECTORS
       ? new CloudflareVectorizeIndex(this.env.MEMORY_VECTORS as VectorizeLike)
       : new InMemoryVectorIndex();
+    if (!this.env.MEMORY_VECTORS) {
+      // Loud on purpose (audit round 2): this is a deploy misconfiguration, not
+      // a silent fallback. Facts stay safe in D1 and memory_search reports how
+      // many are not indexed, but meaning search forgets on every eviction.
+      console.warn(
+        "MEMORY_VECTORS is not bound: meaning search runs on an in-memory index that is LOST on eviction. " +
+          "Create the Vectorize index and bind it (see README) for production.",
+      );
+    }
     const archiveBucket = this.env.ARCHIVE ? new R2BucketAdapter(this.env.ARCHIVE as R2Like) : undefined;
     const backupBucket = this.env.BACKUP ? new R2BucketAdapter(this.env.BACKUP as R2Like) : undefined;
     const storage = this.state.storage as DurableObjectStorageLike;
@@ -547,6 +576,7 @@ export class JarvisDurableObject {
           emails: new D1EmailsRepo(db),
           pcJobs: new D1PcJobsRepo(db, clock),
           pcHeartbeat: new D1PcHeartbeatRepo(db, clock),
+          appEvents: new D1AppEventsRepo(db, clock),
         }
       : undefined;
 
@@ -682,19 +712,52 @@ export class JarvisDurableObject {
     }
     if (url.pathname === "/sms") {
       const sms = (await request.json()) as AcceptedSms;
-      return this.handleOwnerText(this.env.OWNER_CHAT_ID ?? "", "sms", {
+      return this.handleOwnerText("sms", {
         text: smsEventText(sms),
         provenance: sms.provenance,
       });
     }
+    // Telegram owner text. Identity is checked HERE against OWNER_CHAT_ID too
+    // (audit round 2 #5): the DO never trusts a chat id from the body, so the
+    // brain can never be built around "whichever chat arrived first".
     const update = (await request.json()) as {
       chatId: string;
+      updateId?: string;
       text: string;
       provenance: JarvisEvent["provenance"];
       callbackData?: string;
       attachments?: string[];
     };
-    return this.handleOwnerText(update.chatId, "telegram", { text: eventTextFor(update), provenance: update.provenance });
+    if (!this.env.OWNER_CHAT_ID || update.chatId !== this.env.OWNER_CHAT_ID) {
+      return json({ ok: false, reason: "this chat is not the configured owner" }, 403);
+    }
+
+    // Telegram retries failed webhooks (audit round 2 #6): the same update_id
+    // arriving twice must run the brain ONCE. The dedupe key is written BEFORE
+    // the turn runs and deleted again if the turn throws, so a crash mid-turn
+    // still lets the retry reprocess it (at-least-once, never silently lost).
+    let built;
+    try {
+      built = this.ensureBuilt();
+    } catch (e) {
+      if (e instanceof MissingModelKeyError) {
+        const ch = this.ownerChannels(this.env.OWNER_CHAT_ID, async () => undefined);
+        await ch.sendText("I have no model configured (DEEPSEEK_API_KEY is unset), so I can't answer. Nothing was faked.", "telegram");
+        return json({ ok: false, reason: "no model key" }, 200);
+      }
+      throw e;
+    }
+    const dedupeKey = update.updateId && update.updateId !== "" ? `tg_dedupe:${update.updateId}` : null;
+    if (dedupeKey && (await built.settings.get(dedupeKey)) !== undefined) {
+      return json({ ok: true, deduped: true, note: "update already processed (Telegram retry)" });
+    }
+    if (dedupeKey) await built.settings.set(dedupeKey, new SystemClock().nowIso());
+    try {
+      return await this.handleOwnerText("telegram", { text: eventTextFor(update), provenance: update.provenance });
+    } catch (e) {
+      if (dedupeKey) await built.settings.delete(dedupeKey); // let the retry reprocess
+      throw e;
+    }
   }
 
   /**
@@ -703,13 +766,13 @@ export class JarvisDurableObject {
    * recorded as the one Sid last used.
    */
   private async handleOwnerText(
-    chatId: string,
     medium: TextMedium,
     msg: { text: string; provenance: JarvisEvent["provenance"] },
   ): Promise<Response> {
+    const chatId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(chatId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) {
         // Say so plainly, on the medium he used; do not pretend to answer.
@@ -748,7 +811,7 @@ export class JarvisDurableObject {
     const body = (await request.json()) as { appName?: string; authSecret?: string; payload?: unknown };
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
@@ -758,11 +821,9 @@ export class JarvisDurableObject {
     if (!app || !body.authSecret || body.authSecret !== app.authSecret) {
       return json({ ok: false, reason: "unknown app or bad secret" }, 401);
     }
-    const db = this.env.DB as D1Db | undefined;
-    const events = db
-      ? new D1AppEventsRepo(db, new SystemClock())
-      : new AppEventsRepo(new SystemClock());
-    const ev = await events.store(app.name, body.payload);
+    // The SHARED event store (audit round 2: this used to build a fresh
+    // in-memory repo per event, so events vanished the moment they were stored).
+    const ev = await built.appEvents.store(app.name, body.payload);
     const result = await wakeOnAppEvent(built.agent, ev, ownerId);
     return json({ ok: !result.error, note: "event delivered to Jarvis" });
   }
@@ -771,7 +832,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
@@ -807,7 +868,7 @@ export class JarvisDurableObject {
     }
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       console.error("alarm: cannot build Jarvis:", (e as Error).message);
       throw e; // Cloudflare retries a throwing alarm with backoff.
@@ -834,7 +895,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) {
         console.error(`email wake for ${body.emailId}: no model key; the email stays stored and unreviewed`);
@@ -882,7 +943,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
@@ -925,7 +986,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
@@ -975,7 +1036,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       // No model: say so on the call and hang up. Never a fake conversation.
       const line =
@@ -1060,7 +1121,7 @@ export class JarvisDurableObject {
     const ownerId = this.env.OWNER_CHAT_ID ?? "";
     let built;
     try {
-      built = this.ensureBuilt(ownerId);
+      built = this.ensureBuilt();
     } catch (e) {
       if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
       throw e;
@@ -1100,7 +1161,7 @@ export class JarvisDurableObject {
       // A pairing started: wake the brain so it can ask Sid for the code.
       // The HTTP answer still goes back to the app untouched.
       try {
-        const built = this.ensureBuilt(ownerId);
+        const built = this.ensureBuilt();
         const wake = await built.agent.handle({
           channel: "text",
           trigger: "app_event",
