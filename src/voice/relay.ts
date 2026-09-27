@@ -3,6 +3,7 @@ import type { AgentResult, JarvisEvent } from "../jarvis/agent-core.js";
 import type { ToolResult } from "../jarvis/tool-types.js";
 import type { ReceiptsStore } from "../receipts/receipts-repo.js";
 import type { CallSession } from "./call-session.js";
+import { newCallSession } from "./call-session.js";
 import { identifyCaller } from "./caller-id.js";
 import { verifyGuestPinOnCall, verifyOwnerPinOnCall } from "./call-auth.js";
 import type { GuestsStore } from "./guests-repo.js";
@@ -62,9 +63,26 @@ export interface VoiceRelayDeps {
   outboundReason?: string | null;
   /** CallSid from the Twilio-signed WebSocket URL. */
   signedCallSid: string;
+  /**
+   * Two-way call (make_call): the third party Jarvis dialed and the confirmed
+   * brief. When set, the session is an EXTERNAL one — a separate minimal
+   * prompt carrying only the brief, no owner profile, no memory, no tools
+   * except end_call. Their words are never stored as if they were Sid's.
+   */
+  external?: { to: string; brief: string };
   send(msg: RelayOutbound): void;
   close(code: number, reason: string): void;
   newEventId(): string;
+}
+
+/** What the DO needs when a call ends, so it can wake the brain honestly. */
+export interface CallEndInfo {
+  role: import("./call-session.js").CallerRole;
+  direction: "inbound" | "outbound";
+  callSid: string;
+  turns: number;
+  /** External (make_call) calls only. */
+  external?: { to: string; brief: string };
 }
 
 /** Spoken when the model cannot be reached — a plain status, never a fake answer. */
@@ -91,14 +109,45 @@ export class VoiceRelay {
     return this.chain;
   }
 
-  /** The socket closed: the call is over and its session (PIN state included) is discarded. */
-  async onClose(): Promise<void> {
+  /**
+   * The socket closed: the call is over and its session (PIN state included)
+   * is discarded. Returns what the DO needs to wake the brain — for a two-way
+   * (make_call) call that includes the full third-party transcript, which is
+   * stored as a receipt, never as if it were conversation with Sid.
+   */
+  async onClose(): Promise<CallEndInfo | undefined> {
     await this.chain;
-    if (this.session) {
-      await this.receipt("call_end", { callSid: this.d.signedCallSid, role: this.session.role, turns: this.turns }, "ok", true);
+    const session = this.session;
+    if (session) {
+      await this.receipt("call_end", { callSid: this.d.signedCallSid, role: session.role, turns: this.turns }, "ok", true);
+      if (session.role === "external" && session.externalTo !== undefined) {
+        await this.d.receipts.log({
+          tool: "call_transcript",
+          input: {
+            callSid: this.d.signedCallSid,
+            to: session.externalTo,
+            brief: session.externalBrief ?? "",
+            turns: this.turns,
+          },
+          result: { transcript: session.externalHistory.map((m) => ({ role: m.role, content: m.content })) },
+          trigger: "call",
+          performed: false,
+          status: "ok",
+        });
+      }
     }
     this.session = undefined;
     this.ended = true;
+    if (!session) return undefined;
+    return {
+      role: session.role,
+      direction: this.d.direction === "outbound" ? "outbound" : "inbound",
+      callSid: this.d.signedCallSid,
+      turns: this.turns,
+      ...(session.role === "external" && session.externalTo !== undefined
+        ? { external: { to: session.externalTo, brief: session.externalBrief ?? "" } }
+        : {}),
+    };
   }
 
   private async process(raw: string): Promise<void> {
@@ -146,6 +195,25 @@ export class VoiceRelay {
       this.endCall("setup mismatch");
       return;
     }
+    if (this.d.external) {
+      // A two-way call Jarvis placed (make_call): a third party, not Sid. A
+      // separate minimal brain (see agent-core handleExternal) carries ONLY the
+      // confirmed brief. Their words never enter Sid's conversation store.
+      this.session = newCallSession({
+        callerId: this.d.external.to,
+        role: "external",
+        externalTo: this.d.external.to,
+        externalBrief: this.d.external.brief,
+      });
+      await this.receipt("call_start", { callSid, role: "external", to: this.d.external.to, direction: "outbound" }, "ok", true);
+      await this.runTurn(
+        `[outbound call] A person (or voicemail) at ${this.d.external.to} answered the two-way call you placed on Sid's behalf. ` +
+          `Your confirmed brief — the only thing you may act on or share: "${this.d.external.brief}". ` +
+          "Speak first: open with who you are and why you're calling. If it is voicemail, decide whether a very short message serves the brief, then end_call.",
+      );
+      return;
+    }
+
     this.session = await identifyCaller(this.d.signedFrom, this.d.ownerPhoneE164, this.d.guests);
     await this.receipt(
       "call_start",
@@ -239,6 +307,8 @@ export class VoiceRelay {
       return;
     }
     if (result.reply.trim() !== "") this.say(result.reply);
+    // On a two-way call the model may have called end_call: wrap up and hang up.
+    if (call.role === "external" && call.endRequested) this.endCall("assistant ended the call");
   }
 
   private say(text: string): void {

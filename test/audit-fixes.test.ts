@@ -6,6 +6,9 @@ import type { ModelRequest } from "../src/model/types.js";
 import { DeepSeekModel } from "../src/model/deepseek.js";
 import { FixedClock } from "../src/clock.js";
 import { D1PendingActionsRepo } from "../src/confirmations/pending-actions.js";
+import { D1PcJobsRepo } from "../src/pc/pc-jobs-repo.js";
+import { D1PcHeartbeatRepo, InMemoryPcHeartbeatRepo } from "../src/pc/pc-tools.js";
+import { InMemoryPcJobsRepo } from "../src/pc/pc-jobs-repo.js";
 import { GuestsRepo } from "../src/voice/guests-repo.js";
 import { identifyCaller } from "../src/voice/caller-id.js";
 import { hashPin, makeOwnerPinVerifier } from "../src/voice/pin.js";
@@ -42,10 +45,27 @@ describe("audit 1.1: a confirm refused for a missing PIN leaves the action pendi
       const h = makeHarness([{ content: "x" }], {
         clock,
         ownerPin: "1234",
-        ...(kind === "D1" ? { stores: { pending: new D1PendingActionsRepo(freshDb(), clock) } } : {}),
+        ...(kind === "D1"
+          ? {
+              stores: {
+                pending: new D1PendingActionsRepo(freshDb(), clock),
+                pcJobs: new D1PcJobsRepo(freshDb(), clock),
+                pcHeartbeat: new D1PcHeartbeatRepo(freshDb(), clock),
+              },
+            }
+          : {
+              stores: {
+                pcJobs: new InMemoryPcJobsRepo(),
+                pcHeartbeat: new InMemoryPcHeartbeatRepo(clock),
+              },
+            }),
       });
       const call = newCallSession({ callerId: "+1owner", role: "owner" });
-      await h.dispatcher.dispatch("spend_money", { amount: 9, currency: "CAD", description: "x" }, h.ctxFor(callEvent("spend", call, "c1")));
+      await h.dispatcher.dispatch(
+        "spend_money",
+        { url: "https://shop.example/checkout", amount: 9, currency: "CAD", description: "x" },
+        h.ctxFor(callEvent("spend", call, "c1")),
+      );
       const [pendingId] = await pendingIds(h);
 
       const first = await h.dispatcher.executeConfirmed(pendingId!, h.ctxFor(callEvent("yes", call, "c2")));
@@ -56,7 +76,9 @@ describe("audit 1.1: a confirm refused for a missing PIN leaves the action pendi
       const pin = await h.dispatcher.dispatch("pin_verify", { pin: "1234" }, h.ctxFor(callEvent("1234", call, "c3")));
       expect(pin.ok).toBe(true);
       const second = await h.dispatcher.executeConfirmed(pendingId!, h.ctxFor(callEvent("confirm", call, "c4")));
-      expect(second.status).toBe("not_connected"); // reached the real tool (honestly unconnected)
+      // Reached the real tool: the purchase is queued on Sid's PC (not faked as bought).
+      expect(second.status).toBe("queued_on_pc");
+      expect((await h.pcJobs!.all())).toHaveLength(1);
       expect((await h.pending.get(pendingId!))!.status).not.toBe("pending");
     });
   }
@@ -387,15 +409,20 @@ describe("audit 3.2: the voice relay drives the same brain as text", () => {
   });
 
   it("END TO END: spend → yes → pin_required → keypad PIN → confirmed and executed", async () => {
-    const h = makeHarness([], { ownerPin: "1234", pinPepper: "pep" });
+    const clock = new FixedClock();
+    const h = makeHarness([], {
+      ownerPin: "1234",
+      pinPepper: "pep",
+      stores: { pcJobs: new InMemoryPcJobsRepo(), pcHeartbeat: new InMemoryPcHeartbeatRepo(clock) },
+    });
     const r = relayFor(h);
     const script: any[] = [
-      { content: "", toolCalls: [fakeToolCall("spend_money", { amount: 9, currency: "CAD", description: "lunch" })] },
+      { content: "", toolCalls: [fakeToolCall("spend_money", { url: "https://shop.example/checkout", amount: 9, currency: "CAD", description: "lunch" })] },
       { content: "Want me to spend nine dollars on lunch?" },
       async () => ({ content: "", toolCalls: [fakeToolCall("confirm_action", { pending_id: (await pendingIds(h))[0] })] }),
       { content: "I need your PIN first." },
       async () => ({ content: "", toolCalls: [fakeToolCall("confirm_action", { pending_id: (await pendingIds(h))[0] })] }),
-      { content: "Done — well, spending isn't connected yet, so nothing was charged." },
+      { content: "Queued the purchase on your PC — it'll finish at checkout with your saved card." },
     ];
     (h.model as any).turns.push(...script);
     await r.setup();
@@ -410,7 +437,12 @@ describe("audit 3.2: the voice relay drives the same brain as text", () => {
     expect(keypadTurn).toBeDefined();
     const all = await h.receipts.all();
     const final = all.filter((x) => x.tool === "spend_money").at(-1)!;
-    expect(final.status).toBe("not_connected"); // the real tool ran (honestly unconnected)
+    // The real tool ran: the purchase is queued on the PC, honestly not claimed as bought.
+    expect(final.status).toBe("queued_on_pc");
+    const job = (await h.pcJobs!.all())[0]!;
+    expect(JSON.parse(job.argsJson)).toMatchObject({ url: "https://shop.example/checkout", amount: 9, spend: true });
+    // The job carries the card HINT (last4) — never a full card number anywhere.
+    expect(job.argsJson).toContain("2286");
     expect(all.map((x) => x.inputJson + x.resultJson).join("")).not.toContain("1234");
     expect(r.out.at(-1)).toMatchObject({ type: "text", last: true });
   });

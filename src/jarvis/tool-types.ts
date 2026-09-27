@@ -15,6 +15,12 @@ export interface ToolResult {
   /** Human-facing detail returned to the model. */
   message?: string;
   data?: unknown;
+  /**
+   * Receipt override for actions that HAVE performed under a status other than
+   * "ok" (e.g. "sent" = the provider accepted it). Unset => performed is
+   * ok && status === "ok". "ringing"/"queued_on_pc" stay not-yet-performed.
+   */
+  performed?: boolean;
 }
 
 /** A channel that can actually deliver a message to Sid. */
@@ -85,6 +91,14 @@ export interface ToolContext {
   phone?: import("../channels/phone.js").PhoneServices;
   /** Present when a database is wired. Absent => school tools fail closed. */
   school?: import("../school/school-tools.js").SchoolServices;
+
+  // ---- Email (inbound store + outbound sender) ----
+  /** Absent => email_list/email_read/send_email return not_connected. */
+  email?: import("../email/email-tools.js").EmailServices;
+
+  // ---- Sid's Windows PC (job queue + heartbeat) ----
+  /** Absent => pc_status/pc_execute/spend_money delivery return not_connected. */
+  pc?: import("../pc/pc-tools.js").PcServices;
 }
 
 export interface Tool {

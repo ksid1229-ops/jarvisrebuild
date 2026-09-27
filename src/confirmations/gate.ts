@@ -61,7 +61,7 @@ export class ToolDispatcher {
       input: args,
       result,
       trigger: ctx.trigger,
-      performed: result.ok && result.status === "ok",
+      performed: result.performed ?? (result.ok && result.status === "ok"),
       status: result.status,
     });
     return result;
@@ -200,7 +200,7 @@ export class ToolDispatcher {
       input: args,
       result,
       trigger: ctx.trigger,
-      performed: result.ok && result.status === "ok",
+      performed: result.performed ?? (result.ok && result.status === "ok"),
       status: result.status,
     });
     return result;

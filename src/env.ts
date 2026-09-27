@@ -48,6 +48,28 @@ export interface Env {
   /** Sid's IANA timezone. Ontario => America/Toronto (handles EST/EDT + DST). */
   OWNER_TIMEZONE?: string;
 
+  // --- Queues (slow work: email processing) ---
+  /** Cloudflare Queues producer binding (queue "jarvis-work"). */
+  WORK_QUEUE?: unknown;
+
+  // --- Sid's Windows PC agent ---
+  /** Shared secret the PC agent presents as a bearer token. Missing => every /pc request is refused. */
+  PC_AGENT_TOKEN?: string;
+
+  // --- Outbound email (Sid's two real accounts, 2026-09-26) ---
+  /** personal = ksid1229@gmail.com via the Gmail API. */
+  GMAIL_CLIENT_ID?: string;
+  GMAIL_CLIENT_SECRET?: string;
+  GMAIL_REFRESH_TOKEN?: string;
+  /** school = sk7qq09@limestone.on.ca via Microsoft Graph. */
+  MS_GRAPH_CLIENT_ID?: string;
+  MS_GRAPH_CLIENT_SECRET?: string;
+  MS_GRAPH_REFRESH_TOKEN?: string;
+  MS_GRAPH_TENANT_ID?: string;
+  /** From-address overrides; the addresses above are the defaults. */
+  OWNER_EMAIL_PERSONAL?: string;
+  OWNER_EMAIL_SCHOOL?: string;
+
   // --- Watchdog ---
   /** Healthchecks.io ping URL. Missing => the watchdog reports not_connected. */
   WATCHDOG_PING_URL?: string;

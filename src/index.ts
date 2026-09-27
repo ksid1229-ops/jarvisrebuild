@@ -37,8 +37,27 @@ import { schoolVaultSnapshot } from "./school/school-tools.js";
 import { acceptSmsWebhook, EMPTY_TWIML, smsEventText, type AcceptedSms } from "./router/sms-webhook.js";
 import { TwilioRestClient } from "./channels/twilio-rest.js";
 import { OwnerTextChannels, type MediumSender } from "./channels/owner-text-channels.js";
-import { describeCallOutcome, recallOutbound } from "./channels/phone.js";
+import { describeCallOutcome, recallOutbound, type OutboundCallRecord } from "./channels/phone.js";
 import type { TextMedium } from "./types.js";
+import { acceptInboundEmail, wakeTextFor } from "./email/email-worker.js";
+import { D1EmailsRepo } from "./email/email-repo.js";
+import { EmailSender } from "./email/outbound.js";
+import { D1PcJobsRepo } from "./pc/pc-jobs-repo.js";
+import { D1PcHeartbeatRepo } from "./pc/pc-tools.js";
+import { safeEqual } from "./router/telegram-webhook.js";
+
+/** The slice of a Cloudflare Queues producer the email path needs. */
+interface QueueProducerLike {
+  send(message: unknown): Promise<void>;
+}
+
+/** The slice of a Cloudflare Email Worker message (ForwardableEmailMessage). */
+interface InboundEmailMessage {
+  raw: ReadableStream;
+  from: string;
+  to: string;
+  setReject(reason: string): void;
+}
 
 /** Settings key: the text medium Sid last messaged from (a recorded fact). */
 const LAST_TEXT_MEDIUM = "last_text_medium";
@@ -280,6 +299,70 @@ export default {
       return stub.fetch(`https://do/vault/export`, { headers: { "x-vault-token": token ?? "" } });
     }
 
+    // ---- Sid's Windows PC agent (apps/pc-agent) ----
+    // Token-gated, fail closed: without PC_AGENT_TOKEN configured, NOBODY may
+    // pull jobs or post results. Jobs and the heartbeat live in D1; when the
+    // PC is off its queued work simply waits there.
+    if (url.pathname.startsWith("/pc/")) {
+      if (request.method !== "POST" && request.method !== "GET") return json({ ok: false, reason: "method not allowed" }, 405);
+      const token = bearerToken(request);
+      if (!env.PC_AGENT_TOKEN?.trim()) {
+        return json({ ok: false, reason: "PC_AGENT_TOKEN is not configured; refusing every PC request" }, 403);
+      }
+      if (!token || !safeEqual(token, env.PC_AGENT_TOKEN)) {
+        return json({ ok: false, reason: "bad or missing bearer token" }, 401);
+      }
+      const db = env.DB as D1Db | undefined;
+      if (!db) return json({ ok: false, reason: "the PC surface needs the DB binding" }, 500);
+
+      if (url.pathname === "/pc/heartbeat" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { version?: string };
+        await new D1PcHeartbeatRepo(db, new SystemClock()).record(typeof body.version === "string" ? body.version : undefined);
+        return json({ ok: true, note: "heartbeat recorded" });
+      }
+
+      if (url.pathname === "/pc/pull") {
+        const jobs = await new D1PcJobsRepo(db, new SystemClock()).next(5);
+        return json({
+          ok: true,
+          jobs: jobs.map((j) => ({ id: j.id, kind: j.kind, args: JSON.parse(j.argsJson) as Record<string, unknown> })),
+        });
+      }
+
+      if (url.pathname === "/pc/result" && request.method === "POST") {
+        const body = (await request.json().catch(() => null)) as
+          | { jobId?: string; ok?: boolean; result?: unknown; error?: string }
+          | null;
+        if (!body || typeof body.jobId !== "string" || typeof body.ok !== "boolean") {
+          return json({ ok: false, reason: "expected { jobId, ok, result?, error? }" }, 400);
+        }
+        const updated = await new D1PcJobsRepo(db, new SystemClock()).complete(body.jobId, {
+          ok: body.ok,
+          ...(body.result !== undefined ? { result: body.result } : {}),
+          ...(body.error !== undefined ? { error: body.error } : {}),
+        });
+        if (!updated) return json({ ok: false, reason: `no queued or delivered job with id ${body.jobId}` }, 404);
+        // Tell the brain what its PC job actually did (it decides whether to
+        // tell Sid). The HTTP answer to the agent still goes back immediately.
+        if (env.JARVIS && env.OWNER_CHAT_ID) {
+          const stub = (env.JARVIS as DurableObjectNamespace).get(
+            (env.JARVIS as DurableObjectNamespace).idFromName(env.OWNER_CHAT_ID),
+          );
+          const run = stub
+            .fetch("https://do/pc/result", {
+              method: "POST",
+              body: JSON.stringify({ jobId: body.jobId }),
+              headers: { "content-type": "application/json" },
+            })
+            .catch((e: unknown) => console.error("pc result wake failed:", (e as Error).message));
+          if (ctx) ctx.waitUntil(run);
+        }
+        return json({ ok: true, note: "result recorded" });
+      }
+
+      return json({ ok: false, reason: "not found" }, 404);
+    }
+
     return json({ ok: false, reason: "not found" }, 404);
   },
 
@@ -294,6 +377,89 @@ export default {
     const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
     await stub.fetch(`https://do/cron?expr=${encodeURIComponent(event.cron)}`, { method: "POST" });
   },
+
+  /**
+   * Cloudflare Email Routing entry point (school@onesid.ca, with Sid's personal
+   * and school inboxes auto-forwarded to it). Parse defensively, archive the
+   * untouched .eml to the ARCHIVE bucket, store the parsed row in D1, then wake
+   * the brain — via the WORK_QUEUE when bound (slow work belongs on a queue),
+   * otherwise directly. No step fakes success; a missing DB rejects the mail so
+   * the sender sees a bounce instead of a silent drop.
+   */
+  async email(message: InboundEmailMessage, env: Env, ctx?: { waitUntil(p: Promise<unknown>): void }): Promise<void> {
+    const db = env.DB as D1Db | undefined;
+    if (!db) {
+      message.setReject("Jarvis has no D1 binding; the email could not be stored. Nothing was done silently.");
+      return;
+    }
+    const raw = await new Response(message.raw).text();
+    const accepted = await acceptInboundEmail(
+      {
+        emails: new D1EmailsRepo(db),
+        bucket: env.ARCHIVE ? new R2BucketAdapter(env.ARCHIVE as import("./plumbing/bucket.js").R2Like) : undefined,
+        clock: new SystemClock(),
+      },
+      { raw, envelopeFrom: message.from ?? "", envelopeTo: message.to ?? "" },
+    );
+    for (const w of accepted.warnings) console.warn(`email ${accepted.email.id}: ${w}`);
+
+    const wake = (async () => {
+      const queue = env.WORK_QUEUE as QueueProducerLike | undefined;
+      if (queue) {
+        await queue.send({ kind: "email", emailId: accepted.email.id });
+        return;
+      }
+      // No queue bound (local dev): deliver straight to the brain, said so.
+      console.warn("email: WORK_QUEUE is not bound; waking the brain directly (synchronous path)");
+      const ns = env.JARVIS as DurableObjectNamespace | undefined;
+      if (!ns || !env.OWNER_CHAT_ID) throw new Error("JARVIS binding or OWNER_CHAT_ID missing; email wake undeliverable");
+      const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+      const res = await stub.fetch("https://do/email", {
+        method: "POST",
+        body: JSON.stringify({ emailId: accepted.email.id }),
+        headers: { "content-type": "application/json" },
+      });
+      if (!res.ok) throw new Error(`DO email wake returned ${res.status}`);
+    })();
+    if (ctx) ctx.waitUntil(wake.catch((e: unknown) => console.error("email wake failed:", (e as Error).message)));
+    else await wake.catch((e: unknown) => console.error("email wake failed:", (e as Error).message));
+  },
+
+  /**
+   * Queue consumer (jarvis-work). Slow work — email processing today — arrives
+   * here so the webhook/email handler can return immediately. A failure is
+   * retried up to the platform's attempts; past that it is logged LOUDLY and
+   * the row stays in D1 (the email is never lost, only the wake is).
+   */
+  async queue(batch: { messages: { id: string; body: unknown; attempts: number; ack(): void; retry(opts?: { delaySeconds: number }): void }[] }, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        const body = message.body as { kind?: string; emailId?: string };
+        if (body?.kind === "email" && typeof body.emailId === "string") {
+          const ns = env.JARVIS as DurableObjectNamespace | undefined;
+          if (!ns || !env.OWNER_CHAT_ID) throw new Error("JARVIS binding or OWNER_CHAT_ID missing");
+          const stub = ns.get(ns.idFromName(env.OWNER_CHAT_ID));
+          const res = await stub.fetch("https://do/email", {
+            method: "POST",
+            body: JSON.stringify({ emailId: body.emailId }),
+            headers: { "content-type": "application/json" },
+          });
+          if (!res.ok) throw new Error(`DO email wake returned ${res.status}`);
+        } else {
+          // Unknown job: ack it but say so — never a silent drop.
+          console.error("queue: unknown message", JSON.stringify(body));
+        }
+        message.ack();
+      } catch (e) {
+        if (message.attempts < 5) {
+          message.retry({ delaySeconds: 30 });
+        } else {
+          console.error(`queue: giving up on message ${message.id} after ${message.attempts} attempts:`, (e as Error).message);
+          message.ack();
+        }
+      }
+    }
+  },
 };
 
 async function formParams(request: Request): Promise<Record<string, string> | null> {
@@ -304,6 +470,11 @@ async function formParams(request: Request): Promise<Record<string, string> | nu
     params[k] = String(v);
   });
   return params;
+}
+
+function bearerToken(request: Request): string | undefined {
+  const h = request.headers.get("authorization") ?? "";
+  return h.startsWith("Bearer ") ? h.slice(7).trim() : undefined;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -373,8 +544,16 @@ export class JarvisDurableObject {
           wakeupsRepo: new D1WakeupsRepo(db, clock),
           heartbeat: new D1HeartbeatRepo(db, clock),
           memoryRuns: new D1MemoryRunsRepo(db, clock),
+          emails: new D1EmailsRepo(db),
+          pcJobs: new D1PcJobsRepo(db, clock),
+          pcHeartbeat: new D1PcHeartbeatRepo(db, clock),
         }
       : undefined;
+
+    // Outbound email from Sid's two real accounts (his decision, 2026-09-26).
+    // Built when ANY account's credentials exist; a half-configured account
+    // reports not_connected per-account, never a fake send.
+    const emailSender = this.buildEmailSender();
 
     this.built = buildJarvis({
       model,
@@ -388,7 +567,8 @@ export class JarvisDurableObject {
       ...(db ? { db } : {}),
       ...(extractionModel ? { extractionModel } : {}),
       ...(archiveBucket ? { bucket: archiveBucket } : {}),
-      ...(backupBucket ? { backupBucket } : {}),
+      ...(backupBucket ? { backupBucket: backupBucket } : {}),
+      ...(emailSender ? { emailSender } : {}),
       ...(this.env.WATCHDOG_PING_URL ? { watchdogUrl: this.env.WATCHDOG_PING_URL } : {}),
       // The ONE Durable Object alarm, always pointed at the earliest wake-up.
       setAlarm: async (fireAtIso) => {
@@ -439,6 +619,41 @@ export class JarvisDurableObject {
     });
   }
 
+  /**
+   * Outbound email config from secrets. The addresses are Sid's (fixed by his
+   * 2026-09-26 decision; env vars exist only to correct them if they change).
+   * An account with no credentials is simply absent from the sender — the
+   * send_email tool refuses per-account, honestly.
+   */
+  private buildEmailSender(): EmailSender | undefined {
+    const gmail =
+      this.env.GMAIL_CLIENT_ID?.trim() && this.env.GMAIL_CLIENT_SECRET?.trim() && this.env.GMAIL_REFRESH_TOKEN?.trim()
+        ? {
+            provider: "gmail" as const,
+            fromAddress: this.env.OWNER_EMAIL_PERSONAL?.trim() || "ksid1229@gmail.com",
+            clientId: this.env.GMAIL_CLIENT_ID,
+            clientSecret: this.env.GMAIL_CLIENT_SECRET,
+            refreshToken: this.env.GMAIL_REFRESH_TOKEN,
+          }
+        : undefined;
+    const graph =
+      this.env.MS_GRAPH_CLIENT_ID?.trim() &&
+      this.env.MS_GRAPH_CLIENT_SECRET?.trim() &&
+      this.env.MS_GRAPH_REFRESH_TOKEN?.trim() &&
+      this.env.MS_GRAPH_TENANT_ID?.trim()
+        ? {
+            provider: "graph" as const,
+            fromAddress: this.env.OWNER_EMAIL_SCHOOL?.trim() || "sk7qq09@limestone.on.ca",
+            clientId: this.env.MS_GRAPH_CLIENT_ID,
+            clientSecret: this.env.MS_GRAPH_CLIENT_SECRET,
+            refreshToken: this.env.MS_GRAPH_REFRESH_TOKEN,
+            tenantId: this.env.MS_GRAPH_TENANT_ID,
+          }
+        : undefined;
+    if (!gmail && !graph) return undefined;
+    return new EmailSender({ ...(gmail ? { personal: gmail } : {}), ...(graph ? { school: graph } : {}) });
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/apps/event") {
@@ -458,6 +673,12 @@ export class JarvisDurableObject {
     }
     if (url.pathname === "/voice/status") {
       return this.handleCallOutcome(request);
+    }
+    if (url.pathname === "/email") {
+      return this.handleEmailWake(request);
+    }
+    if (url.pathname === "/pc/result") {
+      return this.handlePcResult(request);
     }
     if (url.pathname === "/sms") {
       const sms = (await request.json()) as AcceptedSms;
@@ -602,6 +823,102 @@ export class JarvisDurableObject {
    * the per-call session — role, PIN state, guest transcript — lives in memory
    * for exactly the length of the call and vanishes with it.
    */
+  /**
+   * An inbound email woke the brain (via the queue, or directly when no queue
+   * is bound). The model DECIDES what the email means, whether to interrupt
+   * Sid and what to remember — code only hands it the words (capped, with the
+   * drop count said) and marks the email reviewed.
+   */
+  private async handleEmailWake(request: Request): Promise<Response> {
+    const body = (await request.json()) as { emailId?: string };
+    const ownerId = this.env.OWNER_CHAT_ID ?? "";
+    let built;
+    try {
+      built = this.ensureBuilt(ownerId);
+    } catch (e) {
+      if (e instanceof MissingModelKeyError) {
+        console.error(`email wake for ${body.emailId}: no model key; the email stays stored and unreviewed`);
+        return json({ ok: false, reason: "no model key" }, 200);
+      }
+      throw e;
+    }
+    const email = body.emailId ? await built.emails.get(body.emailId) : undefined;
+    if (!email) {
+      return json({ ok: false, reason: `no email with id ${body.emailId}` }, 404);
+    }
+    const result = await built.agent.handle({
+      channel: "text",
+      trigger: "email",
+      eventId: newId("evt"),
+      text: wakeTextFor(email),
+      provenance: {
+        channel: "text",
+        // An email that auto-forwarded into Jarvis is not Sid's own words.
+        isOwner: false,
+        isForwarded: true,
+        isPrivate: true,
+        sourceRef: `email:${email.id}`,
+        sourceType: "email",
+      },
+    });
+    await built.emails.markReviewed(email.id, new SystemClock().nowIso());
+    if (result.error) {
+      console.error(`email wake for ${email.id}: model error ${result.error}`);
+      return json({ ok: false, reason: result.error }, 200);
+    }
+    // The model was free to send_text Sid itself; whatever it replied goes on
+    // his text channels too (the wake is not a reply to anything he sent).
+    if (result.reply.trim() !== "") await built.ownerChannel.sendText(result.reply);
+    return json({ ok: true });
+  }
+
+  /**
+   * A job Jarvis queued on Sid's PC finished (the PC agent posted its result).
+   * The model decides whether that's worth telling Sid; the receipt already
+   * proves what the PC actually did.
+   */
+  private async handlePcResult(request: Request): Promise<Response> {
+    const body = (await request.json()) as { jobId?: string };
+    const ownerId = this.env.OWNER_CHAT_ID ?? "";
+    let built;
+    try {
+      built = this.ensureBuilt(ownerId);
+    } catch (e) {
+      if (e instanceof MissingModelKeyError) return json({ ok: false, reason: "no model key" }, 200);
+      throw e;
+    }
+    if (!built.pcJobs) return json({ ok: false, reason: "PC surface is not wired" }, 500);
+    const job = body.jobId ? await built.pcJobs.get(body.jobId) : undefined;
+    if (!job) return json({ ok: false, reason: `no pc job with id ${body.jobId}` }, 404);
+
+    let what: string;
+    if (job.status === "done") {
+      what = `finished successfully. Result: ${job.resultJson ?? "(none)"}`;
+    } else if (job.status === "failed") {
+      what = `FAILED. Error: ${job.error ?? "(none)"}`;
+    } else {
+      what = `is still ${job.status} (no result was posted for it).`;
+    }
+    const result = await built.agent.handle({
+      channel: "text",
+      trigger: "app_event",
+      eventId: newId("evt"),
+      text:
+        `[pc result] The ${job.kind} job you queued on Sid's PC at ${job.createdAt} (id ${job.id}) ${what} ` +
+        "Decide whether Sid needs to hear about this and how (text him, stay quiet, retry, ...). The full receipt is in receipts_query.",
+      provenance: {
+        channel: "text",
+        isOwner: false,
+        isForwarded: false,
+        isPrivate: true,
+        sourceRef: `pc:job:${job.id}`,
+        sourceType: "app",
+      },
+    });
+    if (!result.error && result.reply.trim() !== "") await built.ownerChannel.sendText(result.reply);
+    return json({ ok: !result.error });
+  }
+
   /** An outbound call ended: tell Jarvis when there's something to act on. */
   private async handleCallOutcome(request: Request): Promise<Response> {
     const body = (await request.json()) as { ref: string; callStatus: string; answeredBy?: string };
@@ -673,13 +990,18 @@ export class JarvisDurableObject {
       return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: CfWebSocket });
     }
 
-    // Outbound (call_place): the signed URL carries dir=out and the call's ref.
+    // Outbound (call_place / make_call): the signed URL carries dir=out and the
+    // call's ref. A two-way call (make_call) becomes an EXTERNAL session — a
+    // third party with a minimal prompt carrying only the confirmed brief.
     const outbound = url.searchParams.get("dir") === "out";
     const outboundRec = outbound
       ? await recallOutbound(built.settings, url.searchParams.get("ref") ?? "")
       : undefined;
+    const twoWay: OutboundCallRecord | undefined = outboundRec?.purpose === "two_way" ? outboundRec : undefined;
     const relay = new VoiceRelay({
-      ...(outbound ? { direction: "outbound" as const, outboundReason: outboundRec?.text ?? null } : {}),
+      ...(outbound ? { direction: "outbound" as const } : {}),
+      ...(outbound && !twoWay ? { outboundReason: outboundRec?.text ?? null } : {}),
+      ...(twoWay ? { external: { to: twoWay.to, brief: twoWay.text } } : {}),
       agent: built.agent,
       guests: built.guests,
       receipts: built.receipts,
@@ -705,7 +1027,30 @@ export class JarvisDurableObject {
       this.state.waitUntil?.(done);
     });
     server.addEventListener("close", () => {
-      const done = relay.onClose();
+      const done = relay.onClose().then(async (info) => {
+        if (!info?.external) return;
+        // A two-way (make_call) conversation ended. The transcript is already
+        // stored as a receipt; wake the brain with the summary so it can tell
+        // Sid how the call went (and read the transcript via receipts_query).
+        const wake = await built.agent.handle({
+          channel: "text",
+          trigger: "call",
+          eventId: newId("evt"),
+          text:
+            `[external call ended] Your two-way call to ${info.external.to} (brief: "${info.external.brief}") ended ` +
+            `after ${info.turns} turn(s). The full transcript is stored as a receipt — query receipts for tool ` +
+            "'call_transcript' to read exactly what was said before telling Sid how it went.",
+          provenance: {
+            channel: "text",
+            isOwner: false,
+            isForwarded: false,
+            isPrivate: true,
+            sourceRef: `twilio:external:${info.callSid}`,
+            sourceType: "call",
+          },
+        });
+        if (!wake.error && wake.reply.trim() !== "") await built.ownerChannel.sendText(wake.reply);
+      });
       this.state.waitUntil?.(done);
     });
     return new Response(null, { status: 101, webSocket: client } as ResponseInit & { webSocket: CfWebSocket });

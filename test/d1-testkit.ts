@@ -8,6 +8,7 @@ import type { D1Bound, D1Db, D1Prepared, D1Row, D1RunResult } from "../src/persi
 import migration0001 from "../migrations/0001_init.sql?raw";
 import migration0002 from "../migrations/0002_school_surface.sql?raw";
 import migration0003 from "../migrations/0003_memory_hardening.sql?raw";
+import migration0004 from "../migrations/0004_email_pc.sql?raw";
 
 let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
@@ -60,5 +61,6 @@ export function freshDb(): D1Db {
   db.exec(migration0001);
   db.exec(migration0002);
   db.exec(migration0003);
+  db.exec(migration0004);
   return new SqlJsDb(db);
 }

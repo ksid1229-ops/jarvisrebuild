@@ -18,7 +18,7 @@ export interface PhoneOut {
   }): Promise<TwilioSendResult>;
 }
 
-export type OutboundPurpose = "owner" | "contact";
+export type OutboundPurpose = "owner" | "contact" | "two_way";
 
 export interface OutboundCallRecord {
   purpose: OutboundPurpose;
@@ -83,6 +83,17 @@ export function describeCallOutcome(
       );
     }
     return `[call outcome] Your call to Sid was not answered (status ${callStatus}). Why you called: ${rec.text}`;
+  }
+  if (rec.purpose === "two_way") {
+    const who = `your two-way call to ${rec.to}`;
+    if (answered && machine) {
+      return (
+        `[call outcome] ${who} was answered by voicemail (${answeredBy}). The call hung up without leaving anything — ` +
+        `a conversation needs a person. Reason: ${rec.text} (use contact_on_behalf with method 'call' if you now want to leave a spoken message.)`
+      );
+    }
+    if (answered) return null; // a person answered; the conversation itself happened on the relay
+    return `[call outcome] ${who} did not go through (status ${callStatus}). Nothing was said. Reason: ${rec.text}`;
   }
   const who = `your call to ${rec.to} on Sid's behalf`;
   if (answered) {

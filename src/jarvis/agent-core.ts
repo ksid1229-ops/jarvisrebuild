@@ -10,6 +10,7 @@ import type { Channel, Provenance, Trigger } from "../types.js";
 import { ToolDispatcher } from "../confirmations/gate.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { buildGuestPinPrompt, buildGuestPrompt } from "../voice/guest-prompt.js";
+import { buildExternalCallPrompt, END_CALL_TOOL } from "../voice/external-prompt.js";
 import { guestStillActive, verifyGuestPinOnCall } from "../voice/call-auth.js";
 import type { ToolDefinition } from "../model/types.js";
 import type { CallSession } from "../voice/call-session.js";
@@ -80,6 +81,8 @@ export interface AgentDeps {
   archive?: import("../plumbing/archive.js").ArchiveService;
   school?: import("../school/school-tools.js").SchoolServices;
   phone?: import("../channels/phone.js").PhoneServices;
+  email?: import("../email/email-tools.js").EmailServices;
+  pc?: import("../pc/pc-tools.js").PcServices;
   /** Called after each live owner exchange (text or call) — arms the quiet-conversation review. */
   afterOwnerTurn?: () => Promise<void>;
   /** Which text channels are set up and which Sid used last (shown in the prompt). */
@@ -120,10 +123,17 @@ export class AgentCore {
       archive: this.d.archive,
       school: this.d.school,
       phone: this.d.phone,
+      email: this.d.email,
+      pc: this.d.pc,
     };
   }
 
   async handle(event: JarvisEvent, opts: HandleOptions = {}): Promise<AgentResult> {
+    // A third party on a call JARVIS placed (make_call): a separate minimal
+    // brain carrying only the confirmed brief. See handleExternal.
+    if (event.call && event.call.role === "external") {
+      return this.handleExternal(event, event.call);
+    }
     // A guest (or unknown) caller gets a completely separate, minimal brain:
     // no owner profile, no owner memory, no tools. See handleGuest.
     if (event.call && event.call.role !== "owner") {
@@ -352,6 +362,70 @@ export class AgentCore {
       }
     }
     if (reply.trim() !== "") call.guestHistory.push({ role: "assistant", content: reply });
+    return { reply, iterations: rounds, toolCalls };
+  }
+
+  /**
+   * A two-way call Jarvis placed on Sid's behalf (make_call, confirmed). The
+   * third party gets a minimal brain: the confirmed brief and NOTHING else —
+   * no owner profile, no pinned facts, no memory, no tools except end_call.
+   * Their words stay on the session transcript (kept as a receipt by the relay
+   * when the call ends); they are NEVER stored as if they were conversation
+   * with Sid, so memory extraction cannot mistake them for Sid's words.
+   */
+  private async handleExternal(event: JarvisEvent, call: CallSession): Promise<AgentResult> {
+    const brief = call.externalBrief ?? "";
+    const to = call.externalTo ?? call.callerId;
+    const system = buildExternalCallPrompt({
+      to,
+      brief: brief === "" ? "(the brief was not found — say you will call back, do not improvise)" : brief,
+      nowIso: this.d.clock.nowIso(),
+      timezone: this.d.timezone,
+    });
+    call.externalHistory.push({ role: "user", content: event.text });
+
+    const toolCalls: AgentResult["toolCalls"] = [];
+    let rounds = 0;
+    let reply = "";
+    while (rounds < MAX_GUEST_ROUNDS) {
+      rounds++;
+      const messages: ChatMessage[] = [{ role: "system", content: system }, ...call.externalHistory];
+      let resp;
+      try {
+        resp = await this.d.model.complete({ messages, tools: [END_CALL_TOOL] });
+      } catch (e) {
+        const msg = (e as Error).message;
+        await this.d.receipts.log({
+          tool: "model",
+          input: { externalCall: call.callId, to },
+          result: { error: msg },
+          trigger: event.trigger,
+          performed: false,
+          status: "error",
+        });
+        return { reply: "", iterations: rounds, error: msg, toolCalls };
+      }
+      if (resp.toolCalls.length === 0) {
+        reply = resp.content;
+        break;
+      }
+      call.externalHistory.push({ role: "assistant", content: resp.content, toolCalls: resp.toolCalls });
+      for (const tc of resp.toolCalls) {
+        let result: import("./tool-types.js").ToolResult;
+        if (tc.name !== END_CALL_TOOL.name) {
+          result = { ok: false, status: "refused", message: `No tool named ${tc.name} is available on this call.` };
+        } else {
+          result = { ok: true, status: "ok", message: "Ending the call." };
+        }
+        toolCalls.push({ name: tc.name, ok: result.ok, status: String(result.status) });
+        call.externalHistory.push({ role: "tool", content: JSON.stringify(result), toolCallId: tc.id, name: tc.name });
+      }
+      if (toolCalls.some((t) => t.name === END_CALL_TOOL.name && t.ok)) {
+        call.endRequested = true;
+        break; // hang up without another model round
+      }
+    }
+    if (reply.trim() !== "") call.externalHistory.push({ role: "assistant", content: reply });
     return { reply, iterations: rounds, toolCalls };
   }
 

@@ -42,6 +42,12 @@ import { schoolTools, type SchoolServices } from "../school/school-tools.js";
 import { callPlace } from "../channels/phone-tools.js";
 import type { PhoneOut, PhoneServices } from "../channels/phone.js";
 import type { TextMedium } from "../types.js";
+import { emailList, emailRead, type EmailServices } from "../email/email-tools.js";
+import { D1EmailsRepo, InMemoryEmailsRepo, type EmailsStore } from "../email/email-repo.js";
+import type { EmailOut } from "../email/outbound.js";
+import { pcTools, type PcServices } from "../pc/pc-tools.js";
+import { D1PcHeartbeatRepo, type PcHeartbeatStore } from "../pc/pc-tools.js";
+import { D1PcJobsRepo, type PcJobsStore } from "../pc/pc-jobs-repo.js";
 
 export interface BuildInput {
   model: Model;
@@ -81,6 +87,9 @@ export interface BuildInput {
     wakeupsRepo?: WakeupsStore;
     heartbeat?: HeartbeatStore;
     memoryRuns?: MemoryRunsStore;
+    emails?: EmailsStore;
+    pcJobs?: PcJobsStore;
+    pcHeartbeat?: PcHeartbeatStore;
   };
   /**
    * D1 database. When present, the school surface (collector keys, evidence,
@@ -90,6 +99,8 @@ export interface BuildInput {
   db?: D1Db;
   /** Twilio outbound (SMS + calls). Absent => phone tools return not_connected. */
   phone?: { rest: PhoneOut; ownerPhone?: string; publicOrigin?: string };
+  /** Outbound email (Gmail API / Microsoft Graph). Absent => send_email returns not_connected. */
+  emailSender?: EmailOut;
   /** Which text channels exist and which Sid used last (shown in the prompt). */
   textChannels?: () => Promise<{ available: TextMedium[]; lastUsed?: TextMedium }>;
 }
@@ -121,6 +132,14 @@ export interface BuiltJarvis {
   /** Hourly: put active facts that missed the meaning index into it. */
   reindex: () => ReturnType<typeof reindexUnindexed>;
   school?: SchoolServices;
+  /** Inbound email store (serves the DO's email wake handler + email tools). */
+  emails: EmailsStore;
+  /** Outbound email sender, when configured (Gmail API / Microsoft Graph). */
+  emailSender: EmailOut | undefined;
+  /** PC job queue, when the PC surface is wired. */
+  pcJobs: PcJobsStore | undefined;
+  /** PC heartbeat store, when the PC surface is wired. */
+  pcHeartbeat: PcHeartbeatStore | undefined;
 }
 
 /** Wire the whole brain together. Used by the DO, local runner and tests. */
@@ -143,6 +162,15 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     ? { rest: input.phone.rest, ownerPhone: input.phone.ownerPhone, publicOrigin: input.phone.publicOrigin, settings }
     : undefined;
 
+  const emails = input.stores?.emails ?? (input.db ? new D1EmailsRepo(input.db) : new InMemoryEmailsRepo());
+  const emailServices: EmailServices = { repo: emails, ...(input.emailSender ? { sender: input.emailSender } : {}) };
+
+  // The PC queue must persist (a queued job must survive an eviction), so the
+  // PC surface is only wired when D1 (or an explicit test store) is present.
+  const pcJobs = input.stores?.pcJobs ?? (input.db ? new D1PcJobsRepo(input.db, input.clock) : undefined);
+  const pcHeartbeat = input.stores?.pcHeartbeat ?? (input.db ? new D1PcHeartbeatRepo(input.db, input.clock) : undefined);
+  const pcServices: PcServices | undefined = pcJobs && pcHeartbeat ? { jobs: pcJobs, heartbeat: pcHeartbeat } : undefined;
+
   const dispatcher = new ToolDispatcher([
     ...memoryTools,
     ...actionTools,
@@ -150,6 +178,9 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     ...voiceTools,
     ...wakeupTools,
     ...(school ? schoolTools : []),
+    ...pcTools,
+    emailList,
+    emailRead,
     archiveSearch,
     sendText,
     callPlace,
@@ -215,6 +246,8 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     archive,
     ...(school ? { school } : {}),
     ...(phone ? { phone } : {}),
+    ...(emailServices ? { email: emailServices } : {}),
+    ...(pcServices ? { pc: pcServices } : {}),
     ...(input.textChannels ? { textChannels: input.textChannels } : {}),
     ...(input.pinPepper ? { pinPepper: input.pinPepper } : {}),
     // Each live exchange pushes the quiet-conversation memory review later.
@@ -259,5 +292,9 @@ export function buildJarvis(input: BuildInput): BuiltJarvis {
     reviewer,
     reindex,
     ...(school ? { school } : {}),
+    emails,
+    emailSender: input.emailSender,
+    pcJobs: pcServices ? pcJobs : undefined,
+    pcHeartbeat: pcServices ? pcHeartbeat : undefined,
   };
 }

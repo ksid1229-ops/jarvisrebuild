@@ -32,6 +32,7 @@ export function makeHarness(
     setAlarm?: import("../src/scheduler/wakeup-scheduler.js").SetAlarm;
     phone?: import("../src/jarvis/build.js").BuildInput["phone"];
     textChannels?: import("../src/jarvis/build.js").BuildInput["textChannels"];
+    emailSender?: import("../src/email/outbound.js").EmailOut;
   } = {},
 ): Harness {
   const clock = opts.clock ?? new FixedClock();
@@ -57,6 +58,7 @@ export function makeHarness(
     ...(opts.setAlarm ? { setAlarm: opts.setAlarm } : {}),
     ...(opts.phone ? { phone: opts.phone } : {}),
     ...(opts.textChannels ? { textChannels: opts.textChannels } : {}),
+    ...(opts.emailSender ? { emailSender: opts.emailSender } : {}),
   });
   return {
     ...built,
@@ -90,6 +92,8 @@ export function makeHarness(
         archive: built.archive,
         school: built.school,
         phone: built.phone,
+        email: { repo: built.emails, ...(built.emailSender ? { sender: built.emailSender } : {}) },
+        pc: built.pcJobs && built.pcHeartbeat ? { jobs: built.pcJobs, heartbeat: built.pcHeartbeat } : undefined,
       };
     },
   };

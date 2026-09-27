@@ -310,12 +310,28 @@ describe("contact_on_behalf (confirmed) and call_place", () => {
     expect(rest.calls).toHaveLength(0);
   });
 
-  it("make_call (two-way with someone else) is honestly not_connected", async () => {
-    const h = makeHarness([{ content: "x" }], { phone: phoneFor(new FakePhoneOut()) });
-    await h.dispatcher.dispatch("make_call", { to: "+14165550123", reason: "book dentist" }, h.ctxFor(ownerEvent("x", "e1")));
+  it("make_call (confirmed) places a real two-way call carrying only the reason", async () => {
+    const rest = new FakePhoneOut();
+    const h = makeHarness([{ content: "x" }], { phone: phoneFor(rest) });
+    await h.dispatcher.dispatch("make_call", { to: "+14165550123", reason: "book dentist: cleaning this week" }, h.ctxFor(ownerEvent("x", "e1")));
+    expect(rest.calls).toHaveLength(0); // nothing before the confirmation
     const pendingId = [...(h.pending as any).actions.keys()][0] as string;
     const res = await h.dispatcher.executeConfirmed(pendingId, h.ctxFor(ownerEvent("yes", "e2")));
-    expect(res.status).toBe("not_connected");
+    expect(res.status).toBe("ringing");
+    expect(res.message).toContain("only your confirmed reason");
+    const call = rest.calls[0]!;
+    expect(call.to).toBe("+14165550123");
+    expect(call.machineDetection).toBe("Enable");
+    const ref = (res.data as { ref: string }).ref;
+    expect(call.url).toBe(`https://jarvis.example/voice/outbound?ref=${ref}`);
+    expect(call.statusCallback).toBe(`https://jarvis.example/voice/status?ref=${ref}`);
+    // The record says what this call is: a two-way call with that brief.
+    expect(await recallOutbound(h.settings, ref)).toMatchObject({ purpose: "two_way", to: "+14165550123", text: "book dentist: cleaning this week" });
+    // Voicemail on a two-way call hangs up without leaving anything.
+    const rec = (await recallOutbound(h.settings, ref))!;
+    const vm = describeCallOutcome(rec, ref, "completed", "machine_end")!;
+    expect(vm).toContain("hung up without leaving anything");
+    expect(vm).toContain("book dentist");
   });
 
   it("call outcomes: answered by Sid → nothing; voicemail/no-answer → told, with the reason", () => {

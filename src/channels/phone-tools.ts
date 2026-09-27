@@ -105,6 +105,7 @@ export async function contactOnBehalfRun(
     return {
       ok: true,
       status: "sent",
+      performed: true,
       message: `Texted ${to} from Jarvis's Twilio number (not Sid's own phone). Twilio accepted it; delivery to their phone is not confirmed.`,
       data: { sids: res.sids ?? [], ...(res.detail ? { detail: res.detail } : {}) },
     };

@@ -8,6 +8,8 @@ import { buildConnectTwiml } from "../src/voice/twiml.js";
 import { verifyTwilioSignature } from "../src/voice/twilio-signature.js";
 import { makeOwnerPinVerifier, hashPin } from "../src/voice/pin.js";
 import { FixedClock } from "../src/clock.js";
+import { InMemoryPcHeartbeatRepo } from "../src/pc/pc-tools.js";
+import { InMemoryPcJobsRepo } from "../src/pc/pc-jobs-repo.js";
 
 describe("Phase 5: calling", () => {
   it("same brain on a call: an owner voice turn uses the same tools and memory as text", async () => {
@@ -44,8 +46,12 @@ describe("Phase 5: calling", () => {
     expect(res.status).toBe("pin_required");
   });
 
-  it("with a correct PIN the action proceeds (and is honestly not_connected)", async () => {
-    const h = makeHarness([{ content: "x" }], { ownerPin: "1234" });
+  it("with a correct PIN the action proceeds (the purchase is honestly queued on the PC)", async () => {
+    const clock = new FixedClock();
+    const h = makeHarness([{ content: "x" }], {
+      ownerPin: "1234",
+      stores: { pcJobs: new InMemoryPcJobsRepo(), pcHeartbeat: new InMemoryPcHeartbeatRepo(clock) },
+    });
     const call = newCallSession({ callerId: "+1owner", role: "owner" });
     // Verify PIN via the tool (spoken/keyed digits).
     const pinCtx = h.ctxFor(callEvent("pin 1234", call, "c1"));
@@ -54,11 +60,12 @@ describe("Phase 5: calling", () => {
     expect(call.pinVerified).toBe(true);
 
     const ctx = h.ctxFor(callEvent("spend money", call, "c2"));
-    await h.dispatcher.dispatch("spend_money", { amount: 9, currency: "CAD", description: "x" }, ctx);
+    await h.dispatcher.dispatch("spend_money", { url: "https://shop.example/pay", amount: 9, currency: "CAD", description: "x" }, ctx);
     const pendingId = [...(h.pending as any).actions.keys()][0] as string;
     const ctx3 = h.ctxFor(callEvent("confirm", call, "c3"));
     const res = await h.dispatcher.executeConfirmed(pendingId, ctx3);
-    expect(res.status).toBe("not_connected");
+    expect(res.status).toBe("queued_on_pc");
+    expect((await h.pcJobs!.all())).toHaveLength(1);
   });
 
   it("a wrong PIN does not verify, and a missing PIN config fails closed", async () => {

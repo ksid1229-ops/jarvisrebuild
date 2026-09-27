@@ -41,10 +41,16 @@ index_name = "jarvis-memory"
 [ai]
 binding = "AI"
 
-# --- Queues: none yet ---
-# Nothing in src/ uses a queue and the Worker exports no queue() handler, so no
-# queue is declared (a declared queue that was never created blocks `wrangler
-# deploy`). Add one back together with its code when email processing needs it.
+# --- Queues: slow work (email processing) ---
+# Create the queue first:  wrangler queues create jarvis-work
+[[queues.producers]]
+queue = "jarvis-work"
+binding = "WORK_QUEUE"
+
+[[queues.consumers]]
+queue = "jarvis-work"
+max_batch_size = 10
+max_retries = 5
 
 # --- Cron: hourly poll + nightly backup (see scheduler) ---
 [triggers]

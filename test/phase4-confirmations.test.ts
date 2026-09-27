@@ -37,9 +37,9 @@ describe("Phase 4: the five confirmed actions", () => {
     expect(res.message).toContain("must come from Sid");
   });
 
-  it("executes only after Sid confirms in a later turn, and is honest that it is not connected", async () => {
+  it("executes only after Sid confirms in a later turn; honest not_connected without an email sender", async () => {
     const h = makeHarness([
-      { content: "", toolCalls: [fakeToolCall("send_email", { to: "p@x.com", subject: "Hi", body: "B" })] },
+      { content: "", toolCalls: [fakeToolCall("send_email", { from: "personal", to: "p@x.com", subject: "Hi", body: "B" })] },
       { content: "waiting" },
     ]);
     await h.agent.handle(ownerEvent("email prof", "e1"));
@@ -47,12 +47,49 @@ describe("Phase 4: the five confirmed actions", () => {
 
     const laterCtx = h.ctxFor(ownerEvent("yes send it", "e2"));
     const res = await h.dispatcher.executeConfirmed(pendingId, laterCtx);
-    // Not connected: honest, not faked success.
+    // No sender wired: honest, not faked success.
     expect(res.status).toBe("not_connected");
     expect(res.ok).toBe(false);
     const receipt = (await h.receipts.all()).find((r) => r.tool === "send_email" && r.status === "not_connected");
     expect(receipt).toBeTruthy();
     expect(receipt!.performed).toBe(false);
+  });
+
+  it("with a sender wired, a confirmed send_email really sends from the chosen account", async () => {
+    const sent: { account: string; to: string; subject: string }[] = [];
+    const h = makeHarness([{ content: "x" }], {
+      emailSender: {
+        missing: () => null,
+        send: async (account, input) => {
+          sent.push({ account, to: input.to, subject: input.subject });
+          return { ok: true, status: "sent", fromAddress: account === "school" ? "sk7qq09@limestone.on.ca" : "ksid1229@gmail.com" };
+        },
+      },
+    });
+    await h.dispatcher.dispatch("send_email", { from: "school", to: "teacher@limestone.on.ca", subject: "Hi", body: "B" }, h.ctxFor(ownerEvent("email my teacher", "e1")));
+    const pendingId = [...(h.pending as any).actions.keys()][0] as string;
+    expect(sent).toHaveLength(0); // nothing before the confirmation
+    const res = await h.dispatcher.executeConfirmed(pendingId, h.ctxFor(ownerEvent("yes", "e2")));
+    expect(res.status).toBe("sent");
+    expect(res.ok).toBe(true);
+    expect(sent).toEqual([{ account: "school", to: "teacher@limestone.on.ca", subject: "Hi" }]);
+    const receipt = (await h.receipts.all()).find((r) => r.tool === "send_email" && r.status === "sent");
+    expect(receipt).toBeTruthy();
+    expect(receipt!.performed).toBe(true);
+  });
+
+  it("send_email without a from account is refused — code never picks the account", async () => {
+    const h = makeHarness([{ content: "x" }], {
+      emailSender: {
+        missing: () => null,
+        send: async () => ({ ok: true, status: "sent", fromAddress: "x@y.com" }),
+      },
+    });
+    await h.dispatcher.dispatch("send_email", { to: "p@x.com", subject: "Hi", body: "B" }, h.ctxFor(ownerEvent("email prof", "e1")));
+    const pendingId = [...(h.pending as any).actions.keys()][0] as string;
+    const res = await h.dispatcher.executeConfirmed(pendingId, h.ctxFor(ownerEvent("yes", "e2")));
+    expect(res.status).toBe("refused");
+    expect(res.message).toContain("never picks the account");
   });
 
   it("binds a confirmation to exact arguments: a changed action gets a new pending, not the old one", async () => {

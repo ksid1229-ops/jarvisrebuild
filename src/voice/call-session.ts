@@ -1,13 +1,18 @@
 import type { ChatMessage } from "../model/types.js";
 import { newId } from "../ids.js";
 
-export type CallerRole = "owner" | "guest" | "unknown";
+export type CallerRole = "owner" | "guest" | "unknown" | "external";
 
 /**
  * Per-call state. Everything here is scoped to THIS call and is discarded when
  * the call ends — a PIN entered on an earlier call never authorizes a later one.
  * Guest history is kept here (never in the owner's memory) so a guest
  * conversation is coherent within the call without leaking into Sid's store.
+ *
+ * "external" is a third party Jarvis itself dialed (make_call, two-way): not
+ * Sid, not a guest with access — a separate minimal prompt carrying only the
+ * confirmed brief, and a transcript that is kept as a receipt, never stored as
+ * if it were conversation with Sid.
  */
 export interface CallSession {
   callId: string;
@@ -31,6 +36,14 @@ export interface CallSession {
   dtmfBuffer: string;
   /** Guest-only transcript, kept off the owner's memory. */
   guestHistory: ChatMessage[];
+  /** External (make_call) only: the number Jarvis dialed. */
+  externalTo?: string;
+  /** External only: the confirmed brief — the one thing this call may carry about Sid. */
+  externalBrief?: string;
+  /** External only: transcript of the call with the third party (kept off Sid's conversation). */
+  externalHistory: ChatMessage[];
+  /** External only: set when the model called end_call; the relay closes the socket. */
+  endRequested?: boolean;
 }
 
 export function newCallSession(input: {
@@ -39,6 +52,8 @@ export function newCallSession(input: {
   access?: string;
   guestId?: string;
   guestVerified?: boolean;
+  externalTo?: string;
+  externalBrief?: string;
 }): CallSession {
   return {
     callId: newId("call"),
@@ -51,5 +66,8 @@ export function newCallSession(input: {
     pinFailures: 0,
     dtmfBuffer: "",
     guestHistory: [],
+    ...(input.externalTo !== undefined ? { externalTo: input.externalTo } : {}),
+    ...(input.externalBrief !== undefined ? { externalBrief: input.externalBrief } : {}),
+    externalHistory: [],
   };
 }
