@@ -133,7 +133,7 @@ function collectBodies(body: string, contentType: string, cte: string, depth: nu
 
   const { type, params } = parseContentType(contentType);
 
-  if (type === "multipart" && params.boundary) {
+  if (type.startsWith("multipart/") && params.boundary) {
     const out: Bodies = { text: "", html: "" };
     for (const part of splitMultipart(body, params.boundary)) {
       const { headers, body: partBody } = splitHeadAndBody(part);
